@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vac-cli"
+version = "0.1.0"
+description = "Vacuum up cruft from your AI coding-agent sessions (Kiro CLI & Claude Code)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "homeo" }]
+keywords = ["kiro", "claude-code", "sessions", "cleanup", "cli"]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+# Pillow enables real image-dimension checks in `vac doctor`. Optional on purpose.
+dims = ["Pillow>=10.0"]
+
+[project.scripts]
+# The installed command is `vac` (<=3 chars), even though the package is `vac-cli`.
+vac = "vac.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["vac"]
