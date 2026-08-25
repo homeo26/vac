@@ -35,7 +35,7 @@ class ClaudeCodeStore(SessionStore):
     def is_image_block(self, obj: dict) -> bool:
         return isinstance(obj, dict) and obj.get("type") == "image"
 
-    def placeholder(self, note: str) -> dict:
+    def replace_image(self, obj: dict, note: str) -> dict:
         # Match Claude Code's block schema (type/text) rather than Kiro's.
         return {"type": "text", "text": note}
 

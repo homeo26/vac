@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .adapters import ALL_STORES, SessionStore
-from .core import clean_images, count_images
+from .core import clean_images, count_images, max_line_bytes
 
 app = typer.Typer(add_completion=False, help="Vacuum up cruft from AI coding-agent sessions.")
 console = Console()
@@ -25,6 +25,11 @@ console = Console()
 # Anthropic's stricter per-image dimension cap kicks in for "many-image"
 # requests (>~20 images). Sessions above this are at risk of the 2000px error.
 MANY_IMAGE_RISK = 20
+# A single entry this large is almost always a runaway tool output or embedded
+# image, and re-sending it every turn can exceed the model's context window.
+BIG_ENTRY_BYTES = 1_000_000
+# A whole session this large very likely exceeds the context window.
+BIG_SESSION_BYTES = 10_000_000
 
 
 def active_stores() -> list[SessionStore]:
@@ -95,11 +100,15 @@ def analyze(id_or_path: str = typer.Argument(..., help="Session id or path to .j
     store, path = _find(id_or_path)
     size = path.stat().st_size
     imgs = count_images(path, store.is_image_block)
+    biggest = max_line_bytes(path)
     console.print(f"[bold]{store.tool_name}[/bold] session [cyan]{path.stem}[/cyan]")
     console.print(f"  path:   {path}")
-    console.print(f"  size:   {_human(size)}")
+    console.print(f"  size:   {_human(size)}" + (f"  [yellow]⚠ large session[/yellow]"
+                                                 if size > BIG_SESSION_BYTES else ""))
     console.print(f"  images: {imgs}" + (f"  [yellow]⚠ >{MANY_IMAGE_RISK}: many-image risk[/yellow]"
                                          if imgs > MANY_IMAGE_RISK else ""))
+    console.print(f"  largest entry: {_human(biggest)}" + (f"  [yellow]⚠ context-bomb entry[/yellow]"
+                                                           if biggest > BIG_ENTRY_BYTES else ""))
     console.print(f"  active: {'yes (locked)' if store.is_active(path) else 'no'}")
 
 
@@ -119,7 +128,7 @@ def clean(
         raise typer.Exit(2)
 
     res = clean_images(
-        path, store.is_image_block, store.placeholder,
+        path, store.is_image_block, store.replace_image,
         keep=keep, dry_run=not apply, backup=not no_backup,
     )
     verb = "would remove" if res.dry_run else "removed"
@@ -142,6 +151,11 @@ def doctor(
             reasons = []
             if s.image_count > MANY_IMAGE_RISK:
                 reasons.append(f"{s.image_count} images (>{MANY_IMAGE_RISK}: 2000px many-image risk)")
+            biggest = max_line_bytes(s.path)
+            if biggest > BIG_ENTRY_BYTES:
+                reasons.append(f"{_human(biggest)} single entry (context-bomb: runaway output/image)")
+            if s.size_bytes > BIG_SESSION_BYTES:
+                reasons.append(f"{_human(s.size_bytes)} session (may exceed context window)")
             if reasons:
                 problems.append((s, reasons))
 

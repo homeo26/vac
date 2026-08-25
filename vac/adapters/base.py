@@ -43,14 +43,23 @@ class SessionStore:
         raise NotImplementedError
 
     def is_image_block(self, obj: dict) -> bool:
-        """True if ``obj`` is an image content block in this tool's schema."""
+        """True if ``obj`` is an image block in ANY of this tool's schemas.
+
+        A single tool may serialize images more than one way (e.g. an inline
+        content block AND a raw-bytes payload inside a tool-result map); this
+        must recognize all of them.
+        """
         raise NotImplementedError
 
     def is_active(self, log_path: Path) -> bool:
         """Best-effort: is the session currently open (unsafe to edit)?"""
         return False
 
-    # Replacement written in place of a neutralized image block. Adapters may
-    # override to match their schema's text-block shape.
-    def placeholder(self, note: str) -> dict:
+    def replace_image(self, obj: dict, note: str) -> dict:
+        """Return the replacement written in place of a matched image block.
+
+        The shape must match the specific form of ``obj`` so the surrounding
+        structure stays valid (a content block becomes a text content block; a
+        tool-result image item becomes a text item). Adapters override.
+        """
         return {"kind": "text", "data": note}

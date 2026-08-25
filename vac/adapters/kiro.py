@@ -27,7 +27,26 @@ class KiroStore(SessionStore):
         return self.root.is_dir()
 
     def is_image_block(self, obj: dict) -> bool:
-        return isinstance(obj, dict) and obj.get("kind") == "image"
+        if not isinstance(obj, dict):
+            return False
+        # Form 1 — inline content block: {"kind": "image", "data": {...}}
+        if obj.get("kind") == "image":
+            return True
+        # Form 2 — tool-result image item: {"Image": {"format", "source": {...}}}
+        # where source.data is a base64 string OR a raw-bytes integer array.
+        img = obj.get("Image")
+        if isinstance(img, dict):
+            src = img.get("source")
+            if isinstance(src, dict) and src.get("data") is not None:
+                return True
+        return False
+
+    def replace_image(self, obj: dict, note: str) -> dict:
+        # Tool-result form -> text item (matches the items[] {"Text": {...}} shape).
+        if "Image" in obj and obj.get("kind") != "image":
+            return {"Text": {"text": note}}
+        # Inline content-block form -> text content block.
+        return {"kind": "text", "data": note}
 
     def is_active(self, log_path: Path) -> bool:
         return log_path.with_suffix(".lock").exists()

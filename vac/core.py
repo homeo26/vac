@@ -43,6 +43,20 @@ def count_images(log_path: Path, pred: Predicate) -> int:
     return total
 
 
+def max_line_bytes(log_path: Path) -> int:
+    """Largest single JSONL entry in bytes. A huge single entry (one runaway
+    tool output or embedded image) is the signature of a context-bomb session."""
+    biggest = 0
+    try:
+        with log_path.open("rb") as fh:
+            for line in fh:
+                if len(line) > biggest:
+                    biggest = len(line)
+    except OSError:
+        return 0
+    return biggest
+
+
 @dataclass
 class CleanResult:
     total_images: int
@@ -54,7 +68,7 @@ class CleanResult:
     dry_run: bool
 
 
-def _transform(obj, pred: Predicate, placeholder, state: dict):
+def _transform(obj, pred: Predicate, replace, state: dict):
     """Replace image blocks with a placeholder unless they fall in the keep
     window (the last ``keep`` images encountered, by document order)."""
     if isinstance(obj, dict):
@@ -64,17 +78,17 @@ def _transform(obj, pred: Predicate, placeholder, state: dict):
             if state["seen"] > state["total"] - state["keep"]:
                 return obj  # kept
             state["removed"] += 1
-            return placeholder(state["note"])
-        return {k: _transform(v, pred, placeholder, state) for k, v in obj.items()}
+            return replace(obj, state["note"])
+        return {k: _transform(v, pred, replace, state) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_transform(v, pred, placeholder, state) for v in obj]
+        return [_transform(v, pred, replace, state) for v in obj]
     return obj
 
 
 def clean_images(
     log_path: Path,
     pred: Predicate,
-    placeholder,
+    replace,
     keep: int = 0,
     dry_run: bool = True,
     backup: bool = True,
@@ -82,8 +96,9 @@ def clean_images(
 ) -> CleanResult:
     """GC image blocks in a session log, retaining the last ``keep`` images.
 
-    keep=0 strips all images. Returns a CleanResult; when ``dry_run`` no file is
-    written (after_bytes is estimated from the transformed content in memory).
+    ``replace(obj, note)`` returns the schema-correct text placeholder for a
+    matched image block. keep=0 strips all images. When ``dry_run`` no file is
+    written (after_bytes is computed from the transformed content in memory).
     """
     before = log_path.stat().st_size
     total = count_images(log_path, pred)
@@ -101,7 +116,7 @@ def clean_images(
             except json.JSONDecodeError:
                 out_lines.append(raw)  # leave non-JSON lines untouched
                 continue
-            out_lines.append(json.dumps(_transform(obj, pred, placeholder, state),
+            out_lines.append(json.dumps(_transform(obj, pred, replace, state),
                                         ensure_ascii=False))
 
     new_text = "\n".join(out_lines) + "\n"

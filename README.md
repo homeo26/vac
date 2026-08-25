@@ -37,12 +37,21 @@ vac list --json             # machine-readable everywhere
 
 ## Supported tools
 
-| Tool | Store | Image block |
+| Tool | Store | Image forms handled |
 |---|---|---|
-| Kiro CLI | `~/.kiro/sessions/cli/*.jsonl` | `{"kind":"image",...}` |
+| Kiro CLI | `~/.kiro/sessions/cli/*.jsonl` | inline `{"kind":"image",...}` **and** tool-result `{"Image":{"source":{...}}}` (base64 or raw-bytes array) |
 | Claude Code | `~/.claude/projects/**/*.jsonl` | `{"type":"image","source":{"type":"base64",...}}` |
 
 Adapters are pluggable — more tools can be added.
+
+## `doctor` checks
+
+`vac doctor` flags sessions likely to be wedged:
+- **Many-image risk** — more than ~20 images (Anthropic's stricter 2000px cap).
+- **Context-bomb entry** — any single log entry over ~1 MB (a runaway tool output or embedded image re-sent every turn).
+- **Oversized session** — total size likely to exceed the model's context window.
+
+Each finding prints the exact `vac clean … --apply` command to fix it.
 
 ## License
 
