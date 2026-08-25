@@ -54,8 +54,12 @@ class ClaudeCodeStore(SessionStore):
         matches = list(self.root.glob(f"*/{id_or_path}.jsonl"))
         return matches[0] if matches else None
 
-    def _first_meta(self, log: Path) -> dict:
-        """Pull cwd / gitBranch / timestamp from the first record that has them."""
+    def _meta(self, log: Path) -> dict:
+        """Single pass: cwd (first seen), updated (LAST record's timestamp =
+        real last-used), and a title from the first user message."""
+        cwd = None
+        last_ts = None
+        title = None
         try:
             with log.open() as fh:
                 for line in fh:
@@ -63,11 +67,24 @@ class ClaudeCodeStore(SessionStore):
                         o = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if o.get("cwd") or o.get("timestamp"):
-                        return o
+                    if cwd is None and o.get("cwd"):
+                        cwd = o["cwd"]
+                    if o.get("timestamp"):
+                        last_ts = o["timestamp"]  # keep overwriting -> last wins
+                    if title is None:
+                        m = o.get("message")
+                        if isinstance(m, dict) and m.get("role") == "user":
+                            c = m.get("content")
+                            if isinstance(c, str) and c.strip():
+                                title = c.strip()[:80]
+                            elif isinstance(c, list):
+                                for b in c:
+                                    if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
+                                        title = b["text"].strip()[:80]
+                                        break
         except OSError:
             pass
-        return {}
+        return {"cwd": cwd, "updated": last_ts, "title": title}
 
     def list_sessions(self) -> list[SessionInfo]:
         from ..core import count_images
@@ -76,7 +93,7 @@ class ClaudeCodeStore(SessionStore):
         if not self.available():
             return out
         for log in sorted(self.root.glob("*/*.jsonl")):
-            meta = self._first_meta(log)
+            meta = self._meta(log)
             out.append(
                 SessionInfo(
                     id=log.stem,
@@ -85,8 +102,8 @@ class ClaudeCodeStore(SessionStore):
                     size_bytes=log.stat().st_size,
                     image_count=count_images(log, self.is_image_block),
                     active=self.is_active(log),
-                    updated=meta.get("timestamp"),
-                    title=(meta.get("gitBranch") or None),
+                    updated=meta.get("updated"),
+                    title=meta.get("title"),
                     cwd=meta.get("cwd"),
                 )
             )
