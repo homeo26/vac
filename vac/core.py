@@ -255,3 +255,78 @@ def prune_oldest(
         log_path.write_text(new_text, encoding="utf-8")
 
     return PruneResult(total, cutoff, imgs, trunc, before, after, bkp, dry_run, valid)
+
+
+# --- Age filtering & archiving -----------------------------------------------
+
+import re as _re
+import tarfile as _tarfile
+from datetime import datetime, timezone, timedelta
+
+
+def parse_duration(s: str) -> timedelta:
+    """Parse a duration like '60d', '2w', '12h', '30m'. Bare number = days."""
+    m = _re.fullmatch(r"\s*(\d+)\s*([dhwm]?)\s*", str(s).lower())
+    if not m:
+        raise ValueError(f"bad duration {s!r} — use e.g. 60d, 2w, 12h, 30m")
+    n = int(m.group(1))
+    unit = m.group(2) or "d"
+    return {"d": timedelta(days=n), "w": timedelta(weeks=n),
+            "h": timedelta(hours=n), "m": timedelta(minutes=n)}[unit]
+
+
+def _parse_ts(ts: str | None):
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def age_days(updated_at: str | None, path: Path) -> float:
+    """Age in days from the session's real last-used time (updated_at), falling
+    back to the file mtime only when no metadata timestamp is available.
+
+    Using updated_at avoids misclassifying sessions that vac itself rewrote
+    (which bumps mtime) as 'recent'.
+    """
+    dt = _parse_ts(updated_at)
+    if dt is None:
+        try:
+            dt = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            return 0.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+
+
+def session_file_group(log_path: Path) -> list[Path]:
+    """All on-disk files belonging to a session (log + metadata + history +
+    lock + any .bak), matched by the id stem in the same directory."""
+    sid = log_path.name[:-len(".jsonl")] if log_path.name.endswith(".jsonl") else log_path.stem
+    return sorted(p for p in log_path.parent.glob(sid + "*") if p.is_file())
+
+
+def archive_files(groups: list[list[Path]], out_path: Path, remove: bool) -> tuple[int, int]:
+    """tar.gz the given file groups; optionally delete originals afterward.
+    Returns (files_archived, total_bytes). Originals are only removed after the
+    archive is written successfully."""
+    n = 0
+    total = 0
+    with _tarfile.open(out_path, "w:gz") as tar:
+        for grp in groups:
+            for f in grp:
+                if f.exists():
+                    tar.add(f, arcname=f.name)
+                    n += 1
+                    total += f.stat().st_size
+    if remove:
+        for grp in groups:
+            for f in grp:
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+    return n, total

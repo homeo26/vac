@@ -26,8 +26,23 @@ vac clean <id> --keep 3 --apply   # actually write (creates a .bak)
 vac prune <id> --oldest 30  # clean ONLY the oldest 30% of the session (dry-run)
 vac prune <id> --oldest 30 --apply
 vac doctor                  # find sessions likely wedged (many/oversized images)
+vac list --older-than 60d   # sessions not used in 60+ days (by real last-used time)
+vac archive --older-than 60d        # preview archiving old sessions (dry-run)
+vac archive --older-than 60d --apply  # tar.gz + remove them (reversible)
 vac list --json             # machine-readable everywhere
 ```
+
+### Age filtering & archiving
+
+`--older-than` accepts `60d`, `2w`, `12h`, `30m`. Age is computed from each
+session's real **last-used time** (`updated_at` in metadata), not the file
+mtime — so sessions that `vac` itself rewrote are not misflagged as recent.
+
+`vac archive --older-than N` tar.gz's every matching session (log + metadata +
+history) into `~/.kiro/sessions/vac-archive-<timestamp>.tar.gz` and removes the
+originals. It's **reversible** — `tar -xzf <archive> -C <dir>` restores any
+session. Dry-run by default; active/locked sessions are skipped unless
+`--include-active`.
 
 ### `vac prune` — compact a percentage of the context
 

@@ -17,7 +17,8 @@ from rich.console import Console
 from rich.table import Table
 
 from .adapters import ALL_STORES, SessionStore
-from .core import clean_images, count_images, max_line_bytes, prune_oldest
+from .core import (clean_images, count_images, max_line_bytes, prune_oldest,
+                   parse_duration, age_days, session_file_group, archive_files)
 
 app = typer.Typer(add_completion=False, help="Vacuum up cruft from AI coding-agent sessions.")
 console = Console()
@@ -59,37 +60,47 @@ def _find(id_or_path: str) -> tuple[SessionStore, Path]:
 @app.command("list")
 def list_cmd(
     tool: Optional[str] = typer.Option(None, help="Filter by tool: kiro | claude"),
-    sort: str = typer.Option("size", help="Sort by: size | images | updated"),
+    sort: str = typer.Option("size", help="Sort by: size | images | updated | age"),
+    older_than: Optional[str] = typer.Option(None, "--older-than",
+        help="Only sessions last used more than this ago (e.g. 60d, 2w, 12h)"),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
 ):
     """Inventory sessions across installed tools."""
+    cutoff = parse_duration(older_than).total_seconds() / 86400.0 if older_than else None
     rows = []
     for store in active_stores():
         if tool and store.tool_name != tool:
             continue
-        rows.extend(store.list_sessions())
+        for s in store.list_sessions():
+            if cutoff is not None and age_days(s.updated, s.path) < cutoff:
+                continue
+            rows.append(s)
 
     key = {"size": lambda s: -s.size_bytes,
            "images": lambda s: -s.image_count,
-           "updated": lambda s: s.updated or ""}.get(sort, lambda s: -s.size_bytes)
+           "updated": lambda s: s.updated or "",
+           "age": lambda s: -age_days(s.updated, s.path)}.get(sort, lambda s: -s.size_bytes)
     rows.sort(key=key)
 
     if as_json:
-        console.print_json(_json.dumps([r.__dict__ | {"path": str(r.path)} for r in rows], default=str))
+        console.print_json(_json.dumps(
+            [r.__dict__ | {"path": str(r.path), "age_days": round(age_days(r.updated, r.path), 1)}
+             for r in rows], default=str))
         return
 
     if not rows:
-        console.print("[yellow]No sessions found (no supported tools installed?).[/yellow]")
+        console.print("[yellow]No matching sessions.[/yellow]")
         return
 
-    t = Table(title="Sessions")
+    t = Table(title="Sessions" + (f" (older than {older_than})" if older_than else ""))
     t.add_column("tool"); t.add_column("id", overflow="fold"); t.add_column("size", justify="right")
-    t.add_column("imgs", justify="right"); t.add_column("updated"); t.add_column("title/cwd", overflow="fold")
+    t.add_column("imgs", justify="right"); t.add_column("age", justify="right")
+    t.add_column("title/cwd", overflow="fold")
     for r in rows:
         flag = " [red]●live[/red]" if r.active else ""
         risk = " [yellow]⚠[/yellow]" if r.image_count > MANY_IMAGE_RISK else ""
         t.add_row(r.tool, r.id[:12] + flag, _human(r.size_bytes),
-                  f"{r.image_count}{risk}", (r.updated or "")[:10],
+                  f"{r.image_count}{risk}", f"{age_days(r.updated, r.path):.0f}d",
                   (r.title or r.cwd or ""))
     console.print(t)
 
@@ -207,6 +218,63 @@ def prune(
         console.print(f"backup: {res.backup}")
     if res.dry_run and (res.images_removed or res.outputs_truncated):
         console.print("[dim]dry-run — rerun with --apply to write changes[/dim]")
+
+
+@app.command()
+def archive(
+    older_than: str = typer.Option(..., "--older-than",
+        help="Archive sessions last used more than this ago (e.g. 60d, 2w)"),
+    tool: Optional[str] = typer.Option(None, help="Filter by tool: kiro | claude"),
+    out: Optional[str] = typer.Option(None, help="Archive file path (default ~/.kiro/sessions/vac-archive-<ts>.tar.gz)"),
+    apply: bool = typer.Option(False, "--apply", help="Actually archive + remove (default is dry-run)"),
+    include_active: bool = typer.Option(False, "--include-active",
+        help="Also archive locked/active sessions (not recommended)"),
+):
+    """Archive (tar.gz) and remove sessions older than a threshold, by last-used
+    time. Reversible: extract the tarball to restore any session. Dry-run by
+    default; skips active/locked sessions unless --include-active."""
+    cutoff = parse_duration(older_than).total_seconds() / 86400.0
+    selected = []
+    skipped_active = 0
+    for store in active_stores():
+        if tool and store.tool_name != tool:
+            continue
+        for s in store.list_sessions():
+            if age_days(s.updated, s.path) < cutoff:
+                continue
+            if s.active and not include_active:
+                skipped_active += 1
+                continue
+            selected.append(s)
+
+    if not selected:
+        console.print(f"[yellow]No sessions older than {older_than}"
+                      + (f" ({skipped_active} skipped as active)" if skipped_active else "") + ".[/yellow]")
+        return
+
+    groups = [session_file_group(s.path) for s in selected]
+    total_bytes = sum(f.stat().st_size for g in groups for f in g if f.exists())
+
+    console.print(f"[bold]{len(selected)}[/bold] sessions older than {older_than}"
+                  f"  ({_human(total_bytes)} across {sum(len(g) for g in groups)} files)"
+                  + (f"  [dim]· {skipped_active} active skipped[/dim]" if skipped_active else ""))
+    for s in selected[:20]:
+        console.print(f"  {s.tool} {s.id[:12]}  {age_days(s.updated, s.path):.0f}d  "
+                      f"{_human(s.size_bytes)}  {(s.title or s.cwd or '')[:50]}")
+    if len(selected) > 20:
+        console.print(f"  … and {len(selected) - 20} more")
+
+    if not apply:
+        console.print("[dim]dry-run — rerun with --apply to archive + remove[/dim]")
+        return
+
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_path = Path(out) if out else (Path.home() / ".kiro" / "sessions" / f"vac-archive-{ts}.tar.gz")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    n, arch_bytes = archive_files(groups, out_path, remove=True)
+    console.print(f"[green]archived[/green] {n} files ({_human(arch_bytes)}) → {out_path}")
+    console.print(f"restore with: [cyan]tar -xzf {out_path} -C <dir>[/cyan]")
 
 
 if __name__ == "__main__":
