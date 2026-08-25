@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .adapters import ALL_STORES, SessionStore
-from .core import clean_images, count_images, max_line_bytes
+from .core import clean_images, count_images, max_line_bytes, prune_oldest
 
 app = typer.Typer(add_completion=False, help="Vacuum up cruft from AI coding-agent sessions.")
 console = Console()
@@ -170,6 +170,43 @@ def doctor(
     for s, reasons in problems:
         console.print(f"[yellow]⚠[/yellow] [bold]{s.tool}[/bold] {s.id[:12]} — " + "; ".join(reasons))
         console.print(f"    fix: [cyan]vac clean {s.id} --keep 3 --apply[/cyan]")
+
+
+@app.command()
+def prune(
+    id_or_path: str = typer.Argument(..., help="Session id or path to .jsonl"),
+    oldest: float = typer.Option(30.0, help="Clean the OLDEST N%% of the session (keep the rest verbatim)"),
+    max_field: int = typer.Option(2000, help="Truncate tool outputs longer than this many chars (in the old region)"),
+    apply: bool = typer.Option(False, "--apply", help="Actually write (default is dry-run)"),
+    force: bool = typer.Option(False, "--force", help="Edit even if the session looks active"),
+    no_backup: bool = typer.Option(False, "--no-backup", help="Do not create a .bak"),
+):
+    """Compact/clean only the oldest N%% of a session — the operation Kiro's
+    /compact and /rewind can't do. Sheds old images and bulky tool outputs
+    while keeping recent turns and the whole dialogue narrative intact."""
+    store, path = _find(id_or_path)
+    if store.is_active(path) and apply and not force:
+        console.print("[red]Session looks active (locked/recently written). "
+                      "Close it, or pass --force.[/red]")
+        raise typer.Exit(2)
+
+    res = prune_oldest(
+        path, store.is_image_block, store.replace_image,
+        oldest_pct=oldest, max_field_bytes=max_field,
+        dry_run=not apply, backup=not no_backup,
+    )
+    if not res.valid:
+        console.print("[red]Aborted: pruning would produce invalid JSON — nothing written.[/red]")
+        raise typer.Exit(3)
+
+    verb = "would clean" if res.dry_run else "cleaned"
+    console.print(f"region: oldest {oldest:g}% = {res.region_entries}/{res.total_entries} entries")
+    console.print(f"{verb}: {res.images_removed} images removed, {res.outputs_truncated} tool outputs truncated")
+    console.print(f"size:   {_human(res.before_bytes)} → {_human(res.after_bytes)}")
+    if res.backup:
+        console.print(f"backup: {res.backup}")
+    if res.dry_run and (res.images_removed or res.outputs_truncated):
+        console.print("[dim]dry-run — rerun with --apply to write changes[/dim]")
 
 
 if __name__ == "__main__":

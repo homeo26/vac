@@ -138,3 +138,120 @@ def clean_images(
         backup=bkp,
         dry_run=dry_run,
     )
+
+
+# --- Region-based pruning (the "compact only the oldest N%" operation) --------
+
+@dataclass
+class PruneResult:
+    total_entries: int
+    region_entries: int
+    images_removed: int
+    outputs_truncated: int
+    before_bytes: int
+    after_bytes: int
+    backup: Path | None
+    dry_run: bool
+    valid: bool
+
+
+def _truncate(s: str, max_bytes: int) -> tuple[str, int]:
+    """Truncate to head + tail with a marker; returns (new, chars_saved)."""
+    if len(s) <= max_bytes:
+        return s, 0
+    head = (max_bytes * 2) // 3
+    tail = max_bytes - head
+    saved = len(s) - head - tail
+    return (s[:head] + f"\n…[vac pruned {saved} chars of old tool output]…\n" + s[-tail:]), saved
+
+
+def prune_oldest(
+    log_path: Path,
+    is_image: Predicate,
+    replace_image,
+    oldest_pct: float,
+    max_field_bytes: int = 2000,
+    dry_run: bool = True,
+    backup: bool = True,
+    note: str = "[image cleared by vac (old-region prune)]",
+) -> PruneResult:
+    """Clean the OLDEST ``oldest_pct`` percent of a session's entries, keeping
+    the recent remainder verbatim. In the old region:
+      - image blocks (any form) are neutralized;
+      - inside ToolResults entries, large text payloads are truncated.
+    User prompts and assistant text are preserved (only bulky tool output/images
+    are shed), so the conversation narrative survives. Deterministic, non-lossy
+    for the dialogue. Output is JSON-validated before writing.
+    """
+    lines = log_path.read_text().splitlines()
+    entry_idxs = [i for i, l in enumerate(lines) if l.strip()]
+    total = len(entry_idxs)
+    cutoff = int(total * max(0.0, min(100.0, oldest_pct)) / 100.0)
+    region = set(entry_idxs[:cutoff])
+    before = log_path.stat().st_size
+
+    imgs = 0
+    trunc = 0
+
+    def walk(x, in_tr: bool):
+        nonlocal imgs, trunc
+        if isinstance(x, dict):
+            if is_image(x):
+                imgs += 1
+                return replace_image(x, note)
+            new = {}
+            for k, v in x.items():
+                # Truncate bulky tool-output text, only within ToolResults.
+                if in_tr and k == "data" and isinstance(v, str) and x.get("kind") == "text" \
+                        and len(v) > max_field_bytes:
+                    nv, saved = _truncate(v, max_field_bytes)
+                    if saved:
+                        trunc += 1
+                    new[k] = nv
+                elif in_tr and k == "Text" and isinstance(v, str) and len(v) > max_field_bytes \
+                        and set(x.keys()) == {"Text"}:
+                    nv, saved = _truncate(v, max_field_bytes)
+                    if saved:
+                        trunc += 1
+                    new[k] = nv
+                else:
+                    new[k] = walk(v, in_tr)
+            return new
+        if isinstance(x, list):
+            return [walk(v, in_tr) for v in x]
+        return x
+
+    out_lines = []
+    for i, raw in enumerate(lines):
+        if i not in region or not raw.strip():
+            out_lines.append(raw)
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            out_lines.append(raw)
+            continue
+        out_lines.append(json.dumps(walk(obj, obj.get("kind") == "ToolResults"),
+                                    ensure_ascii=False))
+
+    new_text = "\n".join(out_lines) + "\n"
+    after = len(new_text.encode("utf-8"))
+
+    # Schema/validity guard: every non-empty output line must parse as JSON.
+    valid = True
+    for l in out_lines:
+        if l.strip():
+            try:
+                json.loads(l)
+            except json.JSONDecodeError:
+                valid = False
+                break
+
+    bkp = None
+    if not dry_run and valid and (imgs or trunc):
+        if backup:
+            bkp = log_path.with_suffix(log_path.suffix + ".bak")
+            shutil.copy2(log_path, bkp)
+        log_path.write_text(new_text, encoding="utf-8")
+
+    return PruneResult(total, cutoff, imgs, trunc, before, after, bkp, dry_run, valid)

@@ -23,9 +23,22 @@ vac list                    # inventory sessions: size, image count, live?, at-r
 vac analyze <id|path>       # what's consuming space in one session
 vac clean <id> --keep 3     # GC images, keep the last 3 (dry-run by default)
 vac clean <id> --keep 3 --apply   # actually write (creates a .bak)
+vac prune <id> --oldest 30  # clean ONLY the oldest 30% of the session (dry-run)
+vac prune <id> --oldest 30 --apply
 vac doctor                  # find sessions likely wedged (many/oversized images)
 vac list --json             # machine-readable everywhere
 ```
+
+### `vac prune` — compact a percentage of the context
+
+Neither Kiro's `/compact` (summarizes everything-but-recent, lossy, no size control)
+nor `/rewind` (drops everything *after* a point) can clean a chosen slice from the
+*start* of a session. `vac prune --oldest N` fills that gap: it cleans only the
+oldest N% of entries — neutralizing old images and truncating bulky tool outputs —
+while keeping the recent turns and the whole dialogue narrative verbatim. It is
+deterministic and non-lossy for the conversation (only tool-output bulk is shed),
+and the result is JSON-validated before writing. Tune aggressiveness with
+`--max-field <chars>`.
 
 ## Safety
 
