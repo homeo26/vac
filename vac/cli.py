@@ -186,7 +186,8 @@ def doctor(
 @app.command()
 def prune(
     id_or_path: str = typer.Argument(..., help="Session id or path to .jsonl"),
-    oldest: float = typer.Option(30.0, help="Clean the OLDEST N%% of the session (keep the rest verbatim)"),
+    oldest: float = typer.Option(30.0, help="Free ~this %% of CONTEXT TOKENS from the oldest side"),
+    mode: str = typer.Option("outputs", help="'outputs' (drop old tool outputs, keep text) | 'hard' (also drop old text)"),
     max_field: int = typer.Option(2000, help="Truncate tool outputs longer than this many chars (in the old region)"),
     apply: bool = typer.Option(False, "--apply", help="Actually write (default is dry-run)"),
     force: bool = typer.Option(False, "--force", help="Edit even if the session looks active"),
@@ -196,6 +197,9 @@ def prune(
     /compact and /rewind can't do. Sheds old images and bulky tool outputs
     while keeping recent turns and the whole dialogue narrative intact."""
     store, path = _find(id_or_path)
+    if mode not in ("outputs", "hard"):
+        console.print("[red]--mode must be 'outputs' or 'hard'[/red]")
+        raise typer.Exit(2)
     if store.is_active(path) and apply and not force:
         console.print("[red]Session looks active (locked/recently written). "
                       "Close it, or pass --force.[/red]")
@@ -203,21 +207,26 @@ def prune(
 
     res = prune_oldest(
         path, store.is_image_block, store.replace_image,
-        oldest_pct=oldest, max_field_bytes=max_field,
+        oldest_pct=oldest, mode=mode, max_field_bytes=max_field,
         dry_run=not apply, backup=not no_backup,
     )
     if not res.valid:
         console.print("[red]Aborted: pruning would produce invalid JSON — nothing written.[/red]")
         raise typer.Exit(3)
 
-    verb = "would clean" if res.dry_run else "cleaned"
-    console.print(f"region: oldest {oldest:g}% = {res.region_entries}/{res.total_entries} entries")
-    console.print(f"{verb}: {res.images_removed} images removed, {res.outputs_truncated} tool outputs truncated")
-    console.print(f"size:   {_human(res.before_bytes)} → {_human(res.after_bytes)}")
-    if res.backup:
+    pct_total = (res.freed_tokens / res.total_tokens * 100) if res.total_tokens else 0
+    verb = "would free" if res.dry_run else "freed"
+    console.print(f"context: ~{res.total_tokens:,} tokens total; target {oldest:g}% = ~{res.target_tokens:,}")
+    console.print(f"{verb}: ~{res.freed_tokens:,} tokens ({pct_total:.1f}% of context) "
+                  f"via {res.region_entries} entries, {res.images_removed} images, {res.outputs_truncated} outputs")
+    console.print(f"file:   {_human(res.before_bytes)} -> {_human(res.after_bytes)}  (mode={mode})")
+    if not res.dry_run and res.backup:
         console.print(f"backup: {res.backup}")
-    if res.dry_run and (res.images_removed or res.outputs_truncated):
-        console.print("[dim]dry-run — rerun with --apply to write changes[/dim]")
+    if res.freed_tokens < res.target_tokens and mode == "outputs":
+        console.print("[yellow]note:[/yellow] old region is text-heavy; dropping tool output alone "
+                      "did not reach the target. Use [cyan]--mode hard[/cyan] to also drop old text.")
+    if res.dry_run and res.freed_tokens:
+        console.print("[dim]dry-run - rerun with --apply to write changes[/dim]")
 
 
 @app.command()

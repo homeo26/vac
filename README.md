@@ -44,16 +44,26 @@ originals. It's **reversible** — `tar -xzf <archive> -C <dir>` restores any
 session. Dry-run by default; active/locked sessions are skipped unless
 `--include-active`.
 
-### `vac prune` — compact a percentage of the context
+### `vac prune` — free a percentage of the context (by tokens)
 
-Neither Kiro's `/compact` (summarizes everything-but-recent, lossy, no size control)
-nor `/rewind` (drops everything *after* a point) can clean a chosen slice from the
-*start* of a session. `vac prune --oldest N` fills that gap: it cleans only the
-oldest N% of entries — neutralizing old images and truncating bulky tool outputs —
-while keeping the recent turns and the whole dialogue narrative verbatim. It is
-deterministic and non-lossy for the conversation (only tool-output bulk is shed),
-and the result is JSON-validated before writing. Tune aggressiveness with
-`--max-field <chars>`.
+Neither Kiro's `/compact` nor `/rewind` can free a chosen slice of context from
+the *start*. `vac prune --oldest N` does: it frees ~N% of the **context tokens**
+(what the context % actually counts — not file bytes) from the oldest side,
+walking oldest→newest and cleaning entries until the token target is met.
+
+Modes:
+- `--mode outputs` (default) — drop old tool-output bodies / strip images / truncate
+  old tool text, **keeping** prompts and assistant text. Non-lossy for the dialogue,
+  but frees less if the old region is mostly text (it tells you and suggests `hard`).
+- `--mode hard` — also collapse old assistant/prompt text to stubs, guaranteeing it
+  reaches the target. Loses old detail, but genuinely frees the requested %.
+
+It reports tokens freed and % of context; user prompts are kept as anchors; the
+result is JSON-validated before writing. Dry-run + `.bak` by default.
+
+Note: `vac clean` (image GC) shrinks *file bytes* — great for payload-size crashes
+and disk — but images are cheap in tokens, so use `prune` (especially `--mode hard`)
+to actually lower the context % and delay auto-compaction.
 
 ## Safety
 

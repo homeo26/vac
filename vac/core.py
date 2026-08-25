@@ -150,6 +150,9 @@ class PruneResult:
     outputs_truncated: int
     before_bytes: int
     after_bytes: int
+    total_tokens: int
+    target_tokens: int
+    freed_tokens: int
     backup: Path | None
     dry_run: bool
     valid: bool
@@ -165,79 +168,157 @@ def _truncate(s: str, max_bytes: int) -> tuple[str, int]:
     return (s[:head] + f"\n…[vac pruned {saved} chars of old tool output]…\n" + s[-tail:]), saved
 
 
+_IMG_TOKENS = 1500  # rough per-image token cost the model sees (not the file bytes)
+
+
+def entry_tokens(o) -> int:
+    """Approximate model-visible tokens for one log entry (chars/4 of text +
+    a flat cost per image). This is what the context % actually counts — NOT
+    file bytes."""
+    chars = [0]
+    imgs = [0]
+    def c(x):
+        if isinstance(x, dict):
+            if x.get("kind") == "text" and isinstance(x.get("data"), str):
+                chars[0] += len(x["data"])
+            if x.get("kind") == "thinking" and isinstance(x.get("text"), str):
+                chars[0] += len(x["text"])
+            if set(x.keys()) == {"Text"} and isinstance(x["Text"], str):
+                chars[0] += len(x["Text"])
+            if x.get("kind") == "toolUse" and isinstance(x.get("input"), (dict, list)):
+                chars[0] += len(json.dumps(x["input"]))
+            if x.get("kind") == "image" or ("Image" in x and isinstance(x.get("Image"), dict)):
+                imgs[0] += 1
+            for v in x.values():
+                c(v)
+        elif isinstance(x, list):
+            for v in x:
+                c(v)
+    c(o)
+    return chars[0] // 4 + imgs[0] * _IMG_TOKENS
+
+
+def _clean_entry(o, is_image, replace_image, mode, max_field_bytes, note, counters):
+    """Return a cleaned copy of one entry. mode:
+      'outputs' — drop tool-result bodies + strip images, KEEP prompt/assistant text
+      'hard'    — collapse the entry's content to a stub (drops everything)
+    """
+    if mode == "hard":
+        # keep the kind so structure/pairing survives, but gut the payload
+        kind = o.get("kind")
+        if kind == "ToolResults":
+            counters["trunc"] += 1
+            return {"kind": "ToolResults", "data": {"content": [
+                {"kind": "text", "data": "[old turn pruned by vac to free context]"}]}}
+        # For assistant/prompt/thinking entries, collapse text to a stub.
+        def gut(x):
+            if isinstance(x, dict):
+                if is_image(x):
+                    counters["img"] += 1
+                    return replace_image(x, note)
+                if x.get("kind") == "text" and isinstance(x.get("data"), str) and len(x["data"]) > 40:
+                    counters["trunc"] += 1
+                    return {**{k: v for k, v in x.items()}, "data": "[pruned]"}
+                if x.get("kind") == "thinking":
+                    return {"kind": "thinking", "text": "", "signature": x.get("signature", ""),
+                            "redactedContent": x.get("redactedContent")}
+                return {k: gut(v) for k, v in x.items()}
+            if isinstance(x, list):
+                return [gut(v) for v in x]
+            return x
+        return gut(o)
+
+    # mode == 'outputs'
+    in_tr = o.get("kind") == "ToolResults"
+    def walk(x):
+        if isinstance(x, dict):
+            if is_image(x):
+                counters["img"] += 1
+                return replace_image(x, note)
+            new = {}
+            for k, v in x.items():
+                if in_tr and k == "data" and isinstance(v, str) and x.get("kind") == "text" \
+                        and len(v) > max_field_bytes:
+                    nv, saved = _truncate(v, max_field_bytes)
+                    if saved:
+                        counters["trunc"] += 1
+                    new[k] = nv
+                elif in_tr and set(x.keys()) == {"Text"} and k == "Text" and isinstance(v, str) \
+                        and len(v) > max_field_bytes:
+                    nv, saved = _truncate(v, max_field_bytes)
+                    if saved:
+                        counters["trunc"] += 1
+                    new[k] = nv
+                else:
+                    new[k] = walk(v)
+            return new
+        if isinstance(x, list):
+            return [walk(v) for v in x]
+        return x
+    return walk(o)
+
+
 def prune_oldest(
     log_path: Path,
     is_image: Predicate,
     replace_image,
     oldest_pct: float,
+    mode: str = "outputs",
     max_field_bytes: int = 2000,
     dry_run: bool = True,
     backup: bool = True,
     note: str = "[image cleared by vac (old-region prune)]",
 ) -> PruneResult:
-    """Clean the OLDEST ``oldest_pct`` percent of a session's entries, keeping
-    the recent remainder verbatim. In the old region:
-      - image blocks (any form) are neutralized;
-      - inside ToolResults entries, large text payloads are truncated.
-    User prompts and assistant text are preserved (only bulky tool output/images
-    are shed), so the conversation narrative survives. Deterministic, non-lossy
-    for the dialogue. Output is JSON-validated before writing.
+    """Free approximately ``oldest_pct`` percent of the session's CONTEXT TOKENS
+    from the oldest side. Walks entries oldest→newest, cleaning each until the
+    freed-token target is reached, then stops (recent turns untouched).
+
+    mode 'outputs' (default): drop tool-result bodies / strip images / truncate
+    old tool text — keeps prompts + assistant text (may free < target if the old
+    region is text-heavy). mode 'hard': also collapse old assistant/prompt text,
+    guaranteeing it reaches the target (loses old detail). Non-empty user prompts
+    are always kept as anchors. JSON-validated before writing.
     """
     lines = log_path.read_text().splitlines()
-    entry_idxs = [i for i, l in enumerate(lines) if l.strip()]
-    total = len(entry_idxs)
-    cutoff = int(total * max(0.0, min(100.0, oldest_pct)) / 100.0)
-    region = set(entry_idxs[:cutoff])
     before = log_path.stat().st_size
 
-    imgs = 0
-    trunc = 0
-
-    def walk(x, in_tr: bool):
-        nonlocal imgs, trunc
-        if isinstance(x, dict):
-            if is_image(x):
-                imgs += 1
-                return replace_image(x, note)
-            new = {}
-            for k, v in x.items():
-                # Truncate bulky tool-output text, only within ToolResults.
-                if in_tr and k == "data" and isinstance(v, str) and x.get("kind") == "text" \
-                        and len(v) > max_field_bytes:
-                    nv, saved = _truncate(v, max_field_bytes)
-                    if saved:
-                        trunc += 1
-                    new[k] = nv
-                elif in_tr and k == "Text" and isinstance(v, str) and len(v) > max_field_bytes \
-                        and set(x.keys()) == {"Text"}:
-                    nv, saved = _truncate(v, max_field_bytes)
-                    if saved:
-                        trunc += 1
-                    new[k] = nv
-                else:
-                    new[k] = walk(v, in_tr)
-            return new
-        if isinstance(x, list):
-            return [walk(v, in_tr) for v in x]
-        return x
-
-    out_lines = []
-    for i, raw in enumerate(lines):
-        if i not in region or not raw.strip():
-            out_lines.append(raw)
+    parsed = []  # (line_index, obj|None, tokens)
+    for i, l in enumerate(lines):
+        if not l.strip():
+            parsed.append((i, None, 0))
             continue
         try:
-            obj = json.loads(raw)
+            o = json.loads(l)
+            parsed.append((i, o, entry_tokens(o)))
         except json.JSONDecodeError:
-            out_lines.append(raw)
+            parsed.append((i, None, 0))
+
+    total_tokens = sum(t for _, _, t in parsed)
+    target = int(total_tokens * max(0.0, min(100.0, oldest_pct)) / 100.0)
+
+    counters = {"img": 0, "trunc": 0}
+    freed = 0
+    region = 0
+    out_lines = list(lines)
+
+    for idx, (i, o, tok) in enumerate(parsed):
+        if o is None:
             continue
-        out_lines.append(json.dumps(walk(obj, obj.get("kind") == "ToolResults"),
-                                    ensure_ascii=False))
+        if freed >= target:
+            break
+        # Always keep a user prompt intact as an anchor (small, high value).
+        if o.get("kind") == "Prompt":
+            continue
+        cleaned = _clean_entry(o, is_image, replace_image, mode, max_field_bytes, note, counters)
+        new_tok = entry_tokens(cleaned)
+        if new_tok < tok:
+            freed += (tok - new_tok)
+            region += 1
+            out_lines[i] = json.dumps(cleaned, ensure_ascii=False)
 
     new_text = "\n".join(out_lines) + "\n"
     after = len(new_text.encode("utf-8"))
 
-    # Schema/validity guard: every non-empty output line must parse as JSON.
     valid = True
     for l in out_lines:
         if l.strip():
@@ -248,13 +329,14 @@ def prune_oldest(
                 break
 
     bkp = None
-    if not dry_run and valid and (imgs or trunc):
+    if not dry_run and valid and (counters["img"] or counters["trunc"]):
         if backup:
             bkp = log_path.with_suffix(log_path.suffix + ".bak")
             shutil.copy2(log_path, bkp)
         log_path.write_text(new_text, encoding="utf-8")
 
-    return PruneResult(total, cutoff, imgs, trunc, before, after, bkp, dry_run, valid)
+    return PruneResult(len(parsed), region, counters["img"], counters["trunc"],
+                       before, after, total_tokens, target, freed, bkp, dry_run, valid)
 
 
 # --- Age filtering & archiving -----------------------------------------------
