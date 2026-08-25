@@ -42,9 +42,11 @@ class KiroStore(SessionStore):
         return False
 
     def replace_image(self, obj: dict, note: str) -> dict:
-        # Tool-result form -> text item (matches the items[] {"Text": {...}} shape).
+        # Tool-result form -> text item. The Kiro `Text` variant holds a plain
+        # STRING ({"Text": "..."}), not a nested object; a wrong shape fails
+        # deserialization and crashes the agent on session load.
         if "Image" in obj and obj.get("kind") != "image":
-            return {"Text": {"text": note}}
+            return {"Text": note}
         # Inline content-block form -> text content block.
         return {"kind": "text", "data": note}
 
