@@ -133,10 +133,15 @@ def clean(
 ):
     """GC image blocks from a session (dry-run unless --apply)."""
     store, path = _find(id_or_path)
-    if store.is_active(path) and apply and not force:
+    active = store.is_active(path)
+    if active and apply and not force:
         console.print("[red]Session looks active (locked/recently written). "
                       "Close it, or pass --force.[/red]")
         raise typer.Exit(2)
+    if active and apply and force:
+        console.print("[yellow]⚠ this session is ACTIVE — on-disk edits do NOT change the running "
+                      "session and its next save may overwrite them. Close and re-resume it "
+                      "for the change to take effect.[/yellow]")
 
     res = clean_images(
         path, store.is_image_block, store.replace_image,
@@ -149,6 +154,8 @@ def clean(
         console.print(f"backup: {res.backup}")
     if res.dry_run and res.removed:
         console.print("[dim]dry-run — rerun with --apply to write changes[/dim]")
+    if not res.dry_run and active:
+        console.print("[yellow]Restart the session (close & re-resume) to see this take effect.[/yellow]")
 
 
 @app.command()
@@ -201,10 +208,15 @@ def prune(
     if mode not in ("outputs", "hard"):
         console.print("[red]--mode must be 'outputs' or 'hard'[/red]")
         raise typer.Exit(2)
-    if store.is_active(path) and apply and not force:
+    active = store.is_active(path)
+    if active and apply and not force:
         console.print("[red]Session looks active (locked/recently written). "
                       "Close it, or pass --force.[/red]")
         raise typer.Exit(2)
+    if active and apply and force:
+        console.print("[yellow]⚠ this session is ACTIVE — on-disk edits do NOT change the running "
+                      "session and its next save may overwrite them. Close and re-resume it "
+                      "for the context to actually drop.[/yellow]")
 
     res = prune_oldest(
         path, store.is_image_block, store.replace_image,
@@ -228,6 +240,9 @@ def prune(
                       "did not reach the target. Use [cyan]--mode hard[/cyan] to also drop old text.")
     if res.dry_run and res.freed_tokens:
         console.print("[dim]dry-run - rerun with --apply to write changes[/dim]")
+    if not res.dry_run and active:
+        console.print("[yellow]Restart the session (close & re-resume) — the running session won't "
+                      "reflect this until reload.[/yellow]")
 
 
 @app.command()
