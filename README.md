@@ -12,9 +12,34 @@ image dimensions exceed max allowed size for many-image requests: 2000 pixels
 
 ## Install
 
+Pick whichever you have — the installed command is always `vac`.
+
+**pip (universal — works anywhere Python + pip exist):**
 ```bash
-pipx install vac-cli      # installs the `vac` command
+pip install vac-cli
 ```
+
+**pipx / uv (isolated global tool):**
+```bash
+pipx install vac-cli
+uv tool install vac-cli
+```
+
+**From source, no pipx/uv needed (one-liner):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/homeo26/vac/main/install.sh | bash
+```
+This creates an isolated venv under `~/.vac` and links `vac` into `~/.local/bin`
+(uses `uv` automatically if present). Make sure `~/.local/bin` is on your `PATH`.
+
+**From a git checkout (for development):**
+```bash
+git clone https://github.com/homeo26/vac.git && cd vac
+pip install -e .        # or:  uv tool install .
+```
+
+> Requires Python 3.9+. `pip install vac-cli` becomes available once the package
+> is published to PyPI; the `install.sh` and git methods work today.
 
 ## Commands
 
