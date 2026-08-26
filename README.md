@@ -1,5 +1,10 @@
 # vac
 
+[![PyPI](https://img.shields.io/pypi/v/vac-cli.svg)](https://pypi.org/project/vac-cli/)
+[![CI](https://github.com/homeo26/vac/actions/workflows/ci.yml/badge.svg)](https://github.com/homeo26/vac/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/pypi/pyversions/vac-cli.svg)](https://pypi.org/project/vac-cli/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 🧹 Vacuum up cruft from your AI coding-agent sessions. A small, standalone Python CLI that cleans, analyzes, and repairs local session logs for **Kiro CLI** and **Claude Code**.
 
 Long screenshot-heavy sessions accumulate embedded base64 images. Because these agents replay the full conversation every turn, one oversized image (>2000px) can wedge the whole session with:
@@ -25,6 +30,11 @@ pipx install vac-cli
 uv tool install vac-cli
 ```
 
+**Homebrew (macOS/Linux):**
+```bash
+brew install homeo26/vac/vac
+```
+
 **From source, no pipx/uv needed (one-liner):**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/homeo26/vac/main/install.sh | bash
@@ -35,11 +45,10 @@ This creates an isolated venv under `~/.vac` and links `vac` into `~/.local/bin`
 **From a git checkout (for development):**
 ```bash
 git clone https://github.com/homeo26/vac.git && cd vac
-pip install -e .        # or:  uv tool install .
+pip install -e ".[test]"        # or:  uv tool install .
 ```
 
-> Requires Python 3.9+. `pip install vac-cli` becomes available once the package
-> is published to PyPI; the `install.sh` and git methods work today.
+> Requires Python 3.9+.
 
 ## Commands
 
@@ -128,6 +137,18 @@ Adapters are pluggable — more tools can be added.
 - **Oversized session** — total size likely to exceed the model's context window.
 
 Each finding prints the exact `vac clean … --apply` command to fix it.
+
+## Development
+
+```bash
+git clone https://github.com/homeo26/vac.git && cd vac
+pip install -e ".[test]"
+pytest -q                 # run the test suite
+```
+
+CI runs the tests on every push/PR (Python 3.9 and 3.12). Releases publish to
+PyPI automatically via OIDC Trusted Publishing when a `v*` tag is pushed — no
+tokens stored (see `.github/workflows/publish.yml`).
 
 ## License
 
