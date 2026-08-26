@@ -70,6 +70,7 @@ pip install -e ".[test]"        # or:  uv tool install .
 | `vac clean <id>` | `--keep N` · `--apply` · `--force` · `--no-backup` | Strip embedded images (fixes the 2000px / payload-size crashes). `--keep N` retains the newest N |
 | `vac prune <id>` | `--oldest N` · `--mode outputs\|hard` · `--max-field <n>` · `--apply` · `--force` · `--no-backup` | Free ~N% of context **tokens** from the oldest turns (`hard` guarantees the target; `outputs` keeps text) |
 | `vac doctor` | `--json` | Flag sessions likely wedged: many images, context-bomb entry, or oversized session |
+| `vac name [<id>]` | `--include-generic` · `--llm-cmd "claude -p"` · `--tool` · `--limit N` · `--apply` | AI-name untitled sessions from their content (ChatGPT/Claude-style). Uses a local LLM CLI — no API key. Kiro only (writable title store) |
 | `vac archive` | `--older-than <dur>` · `--tool` · `--include-active` · `--apply` | Archive (tar.gz) + remove sessions older than a threshold — reversible |
 
 `<id>` = a session id or a path to a `.jsonl`. `<dur>` = `60d` `2w` `12h` `30m`. Commands that write (`clean`, `prune`, `archive`) are **dry-run by default** — add `--apply`; they create a `.bak`, refuse to edit active/locked sessions (`--force` overrides), and JSON-validate before writing. Works on both **Kiro CLI** and **Claude Code**.

@@ -176,3 +176,50 @@ def test_archive_roundtrip(tmp_path):
     assert not (tmp_path / f"{sid}.jsonl").exists()
     import tarfile
     assert set(tarfile.open(out).getnames()) == {f"{sid}.jsonl", f"{sid}.json", f"{sid}.history"}
+
+
+# ---------------- AI naming helpers ----------------
+
+def test_build_digest_extracts_text(tmp_path):
+    from vac.core import build_digest
+    f = write_jsonl(tmp_path / "k.jsonl", [
+        {"kind": "Prompt", "data": {"content": [{"kind": "text", "data": "build a carpool app"}]}},
+        {"kind": "AssistantMessage", "data": {"content": [{"kind": "text", "data": "sure, here is a plan"}]}},
+    ])
+    d = build_digest(f)
+    assert "carpool app" in d and "here is a plan" in d
+
+
+def test_build_digest_claude_shape(tmp_path):
+    from vac.core import build_digest
+    f = write_jsonl(tmp_path / "c.jsonl", [
+        {"type": "user", "message": {"role": "user", "content": "explain krypto backfill"}},
+    ])
+    assert "krypto backfill" in build_digest(f)
+
+
+def test_sanitize_title():
+    from vac.core import _sanitize_title
+    assert _sanitize_title('  "My Great Title."  ') == "My Great Title"
+    assert _sanitize_title("info line\nActual Title") == "Actual Title"
+    assert len(_sanitize_title("x" * 200)) <= 70
+
+
+def test_generate_title_via_stub_cmd(tmp_path):
+    from vac.core import generate_title
+    # a stub "LLM" that ignores stdin and prints a fixed title
+    assert generate_title("some digest", llm_cmd="printf 'Carpool Organizer App'") == "Carpool Organizer App"
+
+
+def test_generate_title_empty_digest():
+    from vac.core import generate_title
+    assert generate_title("", llm_cmd="printf X") is None
+
+
+def test_kiro_set_title(tmp_path):
+    from vac.adapters import KiroStore
+    (tmp_path / "s.jsonl").write_text("{}\n")
+    (tmp_path / "s.json").write_text(json.dumps({"title": "", "cwd": "/x"}))
+    s = KiroStore()
+    assert s.set_title(tmp_path / "s.jsonl", "New AI Title") is True
+    assert json.loads((tmp_path / "s.json").read_text())["title"] == "New AI Title"

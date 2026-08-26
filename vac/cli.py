@@ -9,6 +9,7 @@ Commands:
 from __future__ import annotations
 
 import json as _json
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -18,7 +19,8 @@ from rich.table import Table
 
 from .adapters import ALL_STORES, SessionStore
 from .core import (clean_images, count_images, max_line_bytes, prune_oldest,
-                   parse_duration, age_days, session_file_group, archive_files)
+                   parse_duration, age_days, session_file_group, archive_files,
+                   build_digest, generate_title)
 
 app = typer.Typer(add_completion=False, help="Vacuum up cruft from AI coding-agent sessions.")
 console = Console()
@@ -300,6 +302,74 @@ def archive(
     n, arch_bytes = archive_files(groups, out_path, remove=True)
     console.print(f"[green]archived[/green] {n} files ({_human(arch_bytes)}) → {out_path}")
     console.print(f"restore with: [cyan]tar -xzf {out_path} -C <dir>[/cyan]")
+
+
+def _needs_title(info, include_generic: bool) -> bool:
+    t = (info.title or "").strip()
+    if not t:
+        return True
+    if include_generic:
+        low = t.lower()
+        return len(t) < 8 or low.startswith(("read ", "can you", "//", "##")) or "http" in low
+    return False
+
+
+@app.command()
+def name(
+    id_or_path: Optional[str] = typer.Argument(None, help="Name one session; omit to scan all untitled"),
+    include_generic: bool = typer.Option(False, "--include-generic", help="Also re-title short/generic names"),
+    llm_cmd: str = typer.Option("claude -p", "--llm-cmd", help="Titler command: reads a digest on stdin, prints a title"),
+    tool: Optional[str] = typer.Option(None, help="Filter by tool: kiro | claude"),
+    limit: int = typer.Option(25, help="Max sessions to name in one run"),
+    apply: bool = typer.Option(False, "--apply", help="Write titles (default: dry-run preview)"),
+    no_backup: bool = typer.Option(False, "--no-backup", help="Don't back up metadata before writing"),
+):
+    """AI-name untitled sessions from their content (like the ChatGPT/Claude
+    sidebar). Uses a local LLM CLI (`claude -p` by default) — no API key needed.
+    Titles persist only where the tool has a writable title store (Kiro)."""
+    # Build (store, SessionInfo) targets.
+    targets = []
+    if id_or_path:
+        store, path = _find(id_or_path)
+        info = next((s for s in store.list_sessions() if s.path == path), None)
+        if info:
+            targets.append((store, info))
+    else:
+        for store in active_stores():
+            if tool and store.tool_name != tool:
+                continue
+            for s in store.list_sessions():
+                if _needs_title(s, include_generic) and not s.active:
+                    targets.append((store, s))
+
+    if not targets:
+        console.print("[yellow]No sessions need naming.[/yellow]")
+        return
+
+    named = skipped = 0
+    for store, s in targets[:limit]:
+        digest = build_digest(s.path)
+        title = generate_title(digest, llm_cmd) if digest else None
+        cur = (s.title or "").strip() or "(untitled)"
+        if not title:
+            console.print(f"[dim]{s.tool} {s.id[:12]}[/dim]  — [red]could not generate[/red] (empty digest or LLM error)")
+            skipped += 1
+            continue
+        console.print(f"{s.tool} {s.id[:12]}  [dim]{cur[:32]}[/dim] → [bold]{title}[/bold]")
+        if apply:
+            mp = s.path.with_suffix(".json")
+            if not no_backup and mp.exists():
+                shutil.copy2(mp, mp.with_suffix(".json.bak"))
+            if store.set_title(s.path, title):
+                named += 1
+            else:
+                console.print(f"    [yellow]cannot persist title for {s.tool} (no writable title store)[/yellow]")
+                skipped += 1
+
+    if apply:
+        console.print(f"\n[green]named {named}[/green], skipped {skipped}")
+    else:
+        console.print(f"\n[dim]dry-run — {len(targets[:limit])} proposed; rerun with --apply to write[/dim]")
 
 
 if __name__ == "__main__":

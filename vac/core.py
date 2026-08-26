@@ -368,6 +368,8 @@ def prune_oldest(
 
 import re as _re
 import tarfile as _tarfile
+import shlex as _shlex
+import subprocess as _subprocess
 from datetime import datetime, timezone, timedelta
 
 
@@ -437,3 +439,91 @@ def archive_files(groups: list[list[Path]], out_path: Path, remove: bool) -> tup
                 except OSError:
                     pass
     return n, total
+
+
+# --- AI session naming --------------------------------------------------------
+
+def _readable_text(o) -> str:
+    """Best-effort readable text from one entry (Kiro + Claude shapes)."""
+    parts = []
+    def grab(x):
+        if isinstance(x, dict):
+            if x.get("kind") == "text" and isinstance(x.get("data"), str):
+                parts.append(x["data"])
+            if x.get("type") == "text" and isinstance(x.get("text"), str):
+                parts.append(x["text"])
+            if isinstance(x.get("content"), str):
+                parts.append(x["content"])
+            for v in x.values():
+                grab(v)
+        elif isinstance(x, list):
+            for v in x:
+                grab(v)
+    grab(o)
+    return " ".join(t.strip() for t in parts if t and t.strip())
+
+
+def build_digest(log_path: Path, max_chars: int = 3000) -> str:
+    """Compact readable transcript from the start of a session, for titling."""
+    out = []
+    used = 0
+    try:
+        with log_path.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                txt = _readable_text(o)
+                if not txt:
+                    continue
+                txt = " ".join(txt.split())  # collapse whitespace
+                out.append(txt[:600])
+                used += len(txt[:600])
+                if used >= max_chars:
+                    break
+    except OSError:
+        return ""
+    return "\n".join(out)[:max_chars]
+
+
+TITLE_PROMPT = (
+    "You are titling a coding-assistant chat session, like the auto-titles in the "
+    "ChatGPT or Claude sidebar. Read the conversation below and output ONE concise, "
+    "specific title: 3-7 words, Title Case, no surrounding quotes, no trailing "
+    "punctuation, no preamble. Describe the concrete task/topic. Output ONLY the title.\n\n"
+    "--- conversation ---\n{digest}\n--- end ---\nTitle:"
+)
+
+
+def _sanitize_title(raw: str) -> str:
+    t = (raw or "").strip()
+    # take the last non-empty line (skip any tool preamble on earlier lines)
+    lines = [l.strip() for l in t.splitlines() if l.strip()]
+    if lines:
+        t = lines[-1]
+    t = t.strip().strip('"').strip("'").strip()
+    t = t.rstrip(".!,:;")
+    return t[:70]
+
+
+def generate_title(digest: str, llm_cmd: str = "claude -p", timeout: int = 120) -> str | None:
+    """Generate a title by piping a prompt to an LLM CLI (stdin -> stdout).
+    Returns None on failure. Default backend: `claude -p` (Claude Code headless)."""
+    if not digest.strip():
+        return None
+    prompt = TITLE_PROMPT.format(digest=digest)
+    try:
+        proc = _subprocess.run(
+            _shlex.split(llm_cmd),
+            input=prompt, capture_output=True, text=True, timeout=timeout,
+        )
+    except (FileNotFoundError, _subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    title = _sanitize_title(proc.stdout)  # stdout only — ignore stderr info lines
+    return title or None

@@ -53,6 +53,18 @@ class KiroStore(SessionStore):
     def is_active(self, log_path: Path) -> bool:
         return log_path.with_suffix(".lock").exists()
 
+    def set_title(self, log_path: Path, title: str) -> bool:
+        mp = log_path.with_suffix(".json")  # {id}.jsonl -> {id}.json
+        if not mp.exists():
+            return False
+        try:
+            d = json.loads(mp.read_text())
+            d["title"] = title
+            mp.write_text(json.dumps(d))
+            return True
+        except (json.JSONDecodeError, OSError):
+            return False
+
     def resolve(self, id_or_path: str) -> Optional[Path]:
         p = Path(id_or_path)
         if p.suffix == ".jsonl" and p.exists():

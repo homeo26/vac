@@ -63,3 +63,9 @@ class SessionStore:
         tool-result image item becomes a text item). Adapters override.
         """
         return {"kind": "text", "data": note}
+
+    def set_title(self, log_path: Path, title: str) -> bool:
+        """Persist a display title for the session. Returns True on success.
+        Only tools with a writable title store (e.g. Kiro's .json metadata)
+        support this; others return False."""
+        return False
