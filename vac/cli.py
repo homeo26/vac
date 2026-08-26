@@ -128,7 +128,7 @@ def analyze(id_or_path: str = typer.Argument(..., help="Session id or path to .j
 @app.command()
 def clean(
     id_or_path: str = typer.Argument(..., help="Session id or path to .jsonl"),
-    keep: int = typer.Option(0, help="Keep the last N images (0 = strip all)"),
+    keep: int = typer.Option(3, help="Keep the newest N images (default 3; 0 = strip all)"),
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Preview without writing"),
     force: bool = typer.Option(False, "--force", help="Edit even if the session looks active"),
     no_backup: bool = typer.Option(False, "--no-backup", help="Do not create a .bak"),

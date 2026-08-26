@@ -68,9 +68,73 @@ class CleanResult:
     dry_run: bool
 
 
-def _transform(obj, pred: Predicate, replace, state: dict):
+def build_image_path_map(log_path: Path) -> dict:
+    """Map toolUseId -> [source file paths] for images read from files
+    (read/FileRead in Image mode). Lets us tell the model where to re-read a
+    cleared image from, instead of losing it entirely."""
+    m: dict[str, list] = {}
+
+    def collect(o):
+        if isinstance(o, dict):
+            tid = o.get("toolUseId")
+            if isinstance(tid, str):
+                paths: list[str] = []
+
+                def fp(y):
+                    if isinstance(y, dict):
+                        if y.get("mode") == "Image":
+                            for key in ("image_paths", "paths"):
+                                if isinstance(y.get(key), list):
+                                    paths.extend(p for p in y[key] if isinstance(p, str))
+                        for v in y.values():
+                            fp(v)
+                    elif isinstance(y, list):
+                        for v in y:
+                            fp(v)
+                fp(o)
+                if paths:
+                    m[tid] = paths
+            for v in o.values():
+                collect(v)
+        elif isinstance(o, list):
+            for v in o:
+                collect(v)
+
+    try:
+        with log_path.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    collect(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
+    return m
+
+
+def _child_tid(parent_tid, key):
+    """Track the enclosing toolUseId while recursing — the results map is keyed
+    by toolUseId, so a key like 'tooluse_…' / 'toolu_…' scopes its subtree."""
+    if isinstance(key, str) and (key.startswith("tooluse") or key.startswith("toolu_")):
+        return key
+    return parent_tid
+
+
+def _img_note(default_note: str, id2paths: dict, tid) -> str:
+    paths = id2paths.get(tid) if tid else None
+    if paths:
+        p = paths[0] if len(paths) == 1 else ", ".join(paths)
+        return f"[image cleared by vac — re-read {p} if you still need it]"
+    return default_note
+
+
+def _transform(obj, pred: Predicate, replace, state: dict, tid=None):
     """Replace image blocks with a placeholder unless they fall in the keep
-    window (the last ``keep`` images encountered, by document order)."""
+    window (the last ``keep`` images encountered, by document order). The
+    placeholder embeds the image's source file path when it can be resolved."""
     if isinstance(obj, dict):
         if pred(obj):
             state["seen"] += 1
@@ -78,10 +142,12 @@ def _transform(obj, pred: Predicate, replace, state: dict):
             if state["seen"] > state["total"] - state["keep"]:
                 return obj  # kept
             state["removed"] += 1
-            return replace(obj, state["note"])
-        return {k: _transform(v, pred, replace, state) for k, v in obj.items()}
+            return replace(obj, _img_note(state["note"], state.get("id2paths", {}), tid))
+        this_tid = obj["toolUseId"] if isinstance(obj.get("toolUseId"), str) else tid
+        return {k: _transform(v, pred, replace, state, _child_tid(this_tid, k))
+                for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_transform(v, pred, replace, state) for v in obj]
+        return [_transform(v, pred, replace, state, tid) for v in obj]
     return obj
 
 
@@ -102,7 +168,8 @@ def clean_images(
     """
     before = log_path.stat().st_size
     total = count_images(log_path, pred)
-    state = {"seen": 0, "removed": 0, "total": total, "keep": max(0, keep), "note": note}
+    state = {"seen": 0, "removed": 0, "total": total, "keep": max(0, keep), "note": note,
+             "id2paths": build_image_path_map(log_path)}
 
     out_lines: list[str] = []
     with log_path.open() as fh:
@@ -210,23 +277,25 @@ def entry_tokens(o) -> int:
     return chars[0] // 4 + imgs[0] * _IMG_TOKENS
 
 
-def _clean_entry(o, is_image, replace_image, mode, max_field_bytes, note, counters):
+def _clean_entry(o, is_image, replace_image, mode, max_field_bytes, note, counters, id2paths=None):
     """Return a cleaned copy of one entry. Schema-aware for Kiro AND Claude:
       'outputs' — truncate long tool-output text + strip images, KEEP prompt/assistant text
       'hard'    — also collapse assistant/prompt text to stubs (guarantees the target)
-    """
+    Image placeholders embed the source file path when resolvable (id2paths)."""
+    id2paths = id2paths or {}
     if mode == "hard":
-        def gut(x):
+        def gut(x, tid=None):
             if isinstance(x, dict):
                 if is_image(x):
                     counters["img"] += 1
-                    return replace_image(x, note)
+                    return replace_image(x, _img_note(note, id2paths, tid))
                 if x.get("kind") == "thinking":
                     return {"kind": "thinking", "text": "", "signature": x.get("signature", ""),
                             "redactedContent": x.get("redactedContent")}
                 if x.get("type") == "thinking":
                     return {**x, "thinking": ""}
                 new = {}
+                this_tid = x["toolUseId"] if isinstance(x.get("toolUseId"), str) else tid
                 for k, v in x.items():
                     # Kiro text node: {kind:text, data:str}
                     if k == "data" and x.get("kind") == "text" and isinstance(v, str) and len(v) > 40:
@@ -238,10 +307,10 @@ def _clean_entry(o, is_image, replace_image, mode, max_field_bytes, note, counte
                     elif k == "content" and isinstance(v, str) and len(v) > 40:
                         counters["trunc"] += 1; new[k] = "[pruned]"
                     else:
-                        new[k] = gut(v)
+                        new[k] = gut(v, _child_tid(this_tid, k))
                 return new
             if isinstance(x, list):
-                return [gut(v) for v in x]
+                return [gut(v, tid) for v in x]
             return x
         # ToolResults entries: gut the whole payload (Kiro)
         if o.get("kind") == "ToolResults":
@@ -251,12 +320,13 @@ def _clean_entry(o, is_image, replace_image, mode, max_field_bytes, note, counte
         return gut(o)
 
     # mode == 'outputs' — truncate long tool-output text (both schemas), strip images
-    def walk(x, in_tr):
+    def walk(x, in_tr, tid=None):
         if isinstance(x, dict):
             if is_image(x):
                 counters["img"] += 1
-                return replace_image(x, note)
+                return replace_image(x, _img_note(note, id2paths, tid))
             here_tr = in_tr or x.get("kind") == "ToolResults" or x.get("type") == "tool_result"
+            this_tid = x["toolUseId"] if isinstance(x.get("toolUseId"), str) else tid
             new = {}
             for k, v in x.items():
                 if here_tr and k == "data" and x.get("kind") == "text" \
@@ -275,10 +345,10 @@ def _clean_entry(o, is_image, replace_image, mode, max_field_bytes, note, counte
                     if saved: counters["trunc"] += 1
                     new[k] = nv
                 else:
-                    new[k] = walk(v, here_tr)
+                    new[k] = walk(v, here_tr, _child_tid(this_tid, k))
             return new
         if isinstance(x, list):
-            return [walk(v, in_tr) for v in x]
+            return [walk(v, in_tr, tid) for v in x]
         return x
     return walk(o, o.get("kind") == "ToolResults")
 
@@ -325,6 +395,7 @@ def prune_oldest(
     freed = 0
     region = 0
     out_lines = list(lines)
+    id2paths = build_image_path_map(log_path)
 
     for idx, (i, o, tok) in enumerate(parsed):
         if o is None:
@@ -334,7 +405,7 @@ def prune_oldest(
         # Always keep a user prompt intact as an anchor (small, high value).
         if o.get("kind") == "Prompt":
             continue
-        cleaned = _clean_entry(o, is_image, replace_image, mode, max_field_bytes, note, counters)
+        cleaned = _clean_entry(o, is_image, replace_image, mode, max_field_bytes, note, counters, id2paths)
         new_tok = entry_tokens(cleaned)
         if new_tok < tok:
             freed += (tok - new_tok)

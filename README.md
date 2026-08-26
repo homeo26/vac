@@ -67,7 +67,7 @@ pip install -e ".[test]"        # or:  uv tool install .
 |---|---|---|
 | `vac list` | `--older-than <dur>` · `--tool kiro\|claude` · `--sort size\|images\|updated\|age` · `--json` | Inventory sessions: size, images, age, live?, at-risk? |
 | `vac analyze <id>` | — | Break down one session: size, image count, largest entry, active? |
-| `vac clean <id>` | `--keep N` · `--dry-run` · `--force` · `--no-backup` | Strip embedded images (fixes the 2000px / payload-size crashes). `--keep N` retains the newest N |
+| `vac clean <id>` | `--keep N` · `--dry-run` · `--force` · `--no-backup` | Strip embedded images (fixes the 2000px / 100-image / payload crashes). Keeps the newest **N** (default 3); cleared file-read images keep a re-readable path |
 | `vac prune <id>` | `--oldest N` · `--mode outputs\|hard` · `--max-field <n>` · `--dry-run` · `--force` · `--no-backup` | Free ~N% of context **tokens** from the oldest turns (`hard` guarantees the target; `outputs` keeps text) |
 | `vac doctor` | `--json` | Flag sessions likely wedged: many images, context-bomb entry, or oversized session |
 | `vac name [<id>]` | `--include-generic` · `--llm-cmd "claude -p"` · `--tool` · `--limit N` · `--dry-run` | AI-name untitled sessions from their content (ChatGPT/Claude-style). Uses a local LLM CLI — no API key. Kiro only (writable title store) |
@@ -100,6 +100,13 @@ aren't misflagged as recently used. Durations: `60d`, `2w`, `12h`, `30m`.
 **Archiving is reversible.** `vac archive` tar.gz's each session (log + metadata +
 history) to `~/.kiro/sessions/vac-archive-<timestamp>.tar.gz`; restore with
 `tar -xzf <archive> -C <dir>`.
+
+**Images are "lazy", not lost.** After the first read, an image's content is
+already captured in the model's text reply, so keeping it re-sent every turn
+mostly just burns tokens and hits the image caps. `vac clean` strips them
+aggressively (keeps the newest 3 by default) and, for images read from a file,
+leaves a placeholder with the **source path** (`re-read /tmp/shot.png …`) so the
+model can pull the image back on demand if it ever needs the pixels again.
 
 ## Safety
 

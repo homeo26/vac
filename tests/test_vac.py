@@ -223,3 +223,23 @@ def test_kiro_set_title(tmp_path):
     s = KiroStore()
     assert s.set_title(tmp_path / "s.jsonl", "New AI Title") is True
     assert json.loads((tmp_path / "s.json").read_text())["title"] == "New AI Title"
+
+
+def test_clean_embeds_source_path(tmp_path):
+    """Cleared file-read images should retain a re-readable source path."""
+    from vac.adapters import KiroStore
+    s = KiroStore()
+    tid = "toolu_abc123"
+    f = write_jsonl(tmp_path / "k.jsonl", [
+        {"kind": "AssistantMessage", "data": {"content": [
+            {"kind": "toolUse", "toolUseId": tid, "name": "read",
+             "input": {"operations": [{"mode": "Image", "image_paths": ["/tmp/shot.png"]}]}}]}},
+        {"kind": "ToolResults", "data": {"results": {tid: {"result": {"Success": {"items": [
+            {"Image": {"format": "png", "source": {"kind": "bytes", "data": [1, 2, 3] * 20}}}]}}}}}},
+    ])
+    from vac.core import build_image_path_map
+    assert build_image_path_map(f).get(tid) == ["/tmp/shot.png"]
+    clean_images(f, s.is_image_block, s.replace_image, keep=0, dry_run=False, backup=False)
+    txt = f.read_text()
+    assert "/tmp/shot.png" in txt and "re-read" in txt
+    assert valid_jsonl(f)
