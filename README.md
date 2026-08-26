@@ -5,15 +5,23 @@
 [![Python](https://img.shields.io/pypi/pyversions/vac-cli.svg)](https://pypi.org/project/vac-cli/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-🧹 Vacuum up cruft from your AI coding-agent sessions. A small, standalone Python CLI that cleans, analyzes, and repairs local session logs for **Kiro CLI** and **Claude Code**.
+🧹 Vacuum up cruft from your AI coding-agent sessions. A small, standalone Python CLI that **cleans, prunes, analyzes, archives, and repairs** local session logs for **Kiro CLI** and **Claude Code**.
 
-Long screenshot-heavy sessions accumulate embedded base64 images. Because these agents replay the full conversation every turn, one oversized image (>2000px) can wedge the whole session with:
+Long agent sessions rot over time — embedded screenshots, giant tool outputs, and ever-growing history. Because these agents replay the whole conversation every turn, that bloat causes real failures:
 
-```
-image dimensions exceed max allowed size for many-image requests: 2000 pixels
-```
+- **Oversized images** (>2000px) wedge a session: `image dimensions exceed max allowed size for many-image requests: 2000 pixels`
+- **Huge embedded payloads** crash the load: `Agent connection closed` / `the selected model cannot continue this conversation`
+- **Runaway context** triggers premature, quality-killing auto-compaction
+- **Hundreds of stale sessions** quietly eat disk
 
-`vac` fixes and prevents that.
+`vac` fixes wedged sessions and keeps them lean:
+
+- **`clean`** — strip embedded images (both Kiro forms + Claude), fixing the 2000px / payload-size crashes
+- **`prune`** — free a chosen **% of context tokens** from the oldest turns (the "compact the first N%" Kiro's `/compact` and `/rewind` can't do)
+- **`analyze` / `doctor`** — see what's eating a session and triage the ones about to break
+- **`list` / `archive`** — inventory by age and archive old sessions (reversible)
+
+Everything is **dry-run by default, backs up before writing, refuses to touch live sessions, and JSON-validates the result** — so it never corrupts a session.
 
 ## Install
 
