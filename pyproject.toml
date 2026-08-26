@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vac-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "Vacuum up cruft from your AI coding-agent sessions (Kiro CLI & Claude Code)."
 readme = "README.md"
 requires-python = ">=3.9"

@@ -21,7 +21,7 @@ Long agent sessions rot over time — embedded screenshots, giant tool outputs, 
 - **`analyze` / `doctor`** — see what's eating a session and triage the ones about to break
 - **`list` / `archive`** — inventory by age and archive old sessions (reversible)
 
-Everything is **dry-run by default, backs up before writing, refuses to touch live sessions, and JSON-validates the result** — so it never corrupts a session.
+Everything **backs up before writing, refuses to touch live sessions, and JSON-validates the result** (and offers `--dry-run` to preview) — so it never corrupts a session.
 
 ## Install
 
@@ -67,19 +67,19 @@ pip install -e ".[test]"        # or:  uv tool install .
 |---|---|---|
 | `vac list` | `--older-than <dur>` · `--tool kiro\|claude` · `--sort size\|images\|updated\|age` · `--json` | Inventory sessions: size, images, age, live?, at-risk? |
 | `vac analyze <id>` | — | Break down one session: size, image count, largest entry, active? |
-| `vac clean <id>` | `--keep N` · `--apply` · `--force` · `--no-backup` | Strip embedded images (fixes the 2000px / payload-size crashes). `--keep N` retains the newest N |
-| `vac prune <id>` | `--oldest N` · `--mode outputs\|hard` · `--max-field <n>` · `--apply` · `--force` · `--no-backup` | Free ~N% of context **tokens** from the oldest turns (`hard` guarantees the target; `outputs` keeps text) |
+| `vac clean <id>` | `--keep N` · `--dry-run` · `--force` · `--no-backup` | Strip embedded images (fixes the 2000px / payload-size crashes). `--keep N` retains the newest N |
+| `vac prune <id>` | `--oldest N` · `--mode outputs\|hard` · `--max-field <n>` · `--dry-run` · `--force` · `--no-backup` | Free ~N% of context **tokens** from the oldest turns (`hard` guarantees the target; `outputs` keeps text) |
 | `vac doctor` | `--json` | Flag sessions likely wedged: many images, context-bomb entry, or oversized session |
-| `vac name [<id>]` | `--include-generic` · `--llm-cmd "claude -p"` · `--tool` · `--limit N` · `--apply` | AI-name untitled sessions from their content (ChatGPT/Claude-style). Uses a local LLM CLI — no API key. Kiro only (writable title store) |
-| `vac archive` | `--older-than <dur>` · `--tool` · `--include-active` · `--apply` | Archive (tar.gz) + remove sessions older than a threshold — reversible |
+| `vac name [<id>]` | `--include-generic` · `--llm-cmd "claude -p"` · `--tool` · `--limit N` · `--dry-run` | AI-name untitled sessions from their content (ChatGPT/Claude-style). Uses a local LLM CLI — no API key. Kiro only (writable title store) |
+| `vac archive` | `--older-than <dur>` · `--tool` · `--include-active` · `--dry-run` | Archive (tar.gz) + remove sessions older than a threshold — reversible |
 
-`<id>` = a session id or a path to a `.jsonl`. `<dur>` = `60d` `2w` `12h` `30m`. Commands that write (`clean`, `prune`, `archive`) are **dry-run by default** — add `--apply`; they create a `.bak`, refuse to edit active/locked sessions (`--force` overrides), and JSON-validate before writing. Works on both **Kiro CLI** and **Claude Code**.
+`<id>` = a session id or a path to a `.jsonl`. `<dur>` = `60d` `2w` `12h` `30m`. Commands that write (`clean`, `prune`, `name`, `archive`) **apply by default** — add `--dry-run` (`-n`) to preview. They create a `.bak`, refuse to edit active/locked sessions (`--force` overrides), and JSON-validate before writing. Works on both **Kiro CLI** and **Claude Code**.
 
 ```bash
 vac doctor                                  # triage everything
-vac clean <id> --keep 1 --apply             # drop old images
-vac prune <id> --oldest 20 --mode hard --apply   # free ~20% of context tokens
-vac archive --older-than 60d --apply        # reclaim disk (reversible)
+vac clean <id> --keep 1                     # drop old images (add --dry-run to preview)
+vac prune <id> --oldest 20 --mode hard      # free ~20% of context tokens
+vac archive --older-than 60d                # reclaim disk (reversible)
 ```
 
 ## Key concepts
@@ -103,7 +103,7 @@ history) to `~/.kiro/sessions/vac-archive-<timestamp>.tar.gz`; restore with
 
 ## Safety
 
-- **Dry-run by default** — `clean` never writes unless you pass `--apply`.
+- **Preview with `--dry-run`** — commands apply by default; `-n`/`--dry-run` shows what would change without writing.
 - **Automatic backup** — writes a `.bak` beside the log (disable with `--no-backup`).
 - **Won't touch live sessions** — refuses to edit a locked/recently-active session unless `--force`.
 - **Keeps source paths** — cleared images become a text placeholder, and file-based images can simply be re-read.
@@ -125,7 +125,7 @@ Adapters are pluggable — more tools can be added.
 - **Context-bomb entry** — any single log entry over ~1 MB (a runaway tool output or embedded image re-sent every turn).
 - **Oversized session** — total size likely to exceed the model's context window.
 
-Each finding prints the exact `vac clean … --apply` command to fix it.
+Each finding prints the exact `vac clean …` command to fix it.
 
 ## Development
 

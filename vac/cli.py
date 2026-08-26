@@ -129,25 +129,25 @@ def analyze(id_or_path: str = typer.Argument(..., help="Session id or path to .j
 def clean(
     id_or_path: str = typer.Argument(..., help="Session id or path to .jsonl"),
     keep: int = typer.Option(0, help="Keep the last N images (0 = strip all)"),
-    apply: bool = typer.Option(False, "--apply", help="Actually write (default is dry-run)"),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Preview without writing"),
     force: bool = typer.Option(False, "--force", help="Edit even if the session looks active"),
     no_backup: bool = typer.Option(False, "--no-backup", help="Do not create a .bak"),
 ):
-    """GC image blocks from a session (dry-run unless --apply)."""
+    """GC image blocks from a session. Applies by default; use --dry-run to preview."""
     store, path = _find(id_or_path)
     active = store.is_active(path)
-    if active and apply and not force:
+    if active and not dry_run and not force:
         console.print("[red]Session looks active (locked/recently written). "
                       "Close it, or pass --force.[/red]")
         raise typer.Exit(2)
-    if active and apply and force:
+    if active and not dry_run and force:
         console.print("[yellow]⚠ this session is ACTIVE — on-disk edits do NOT change the running "
                       "session and its next save may overwrite them. Close and re-resume it "
                       "for the change to take effect.[/yellow]")
 
     res = clean_images(
         path, store.is_image_block, store.replace_image,
-        keep=keep, dry_run=not apply, backup=not no_backup,
+        keep=keep, dry_run=dry_run, backup=not no_backup,
     )
     verb = "would remove" if res.dry_run else "removed"
     console.print(f"images: {res.total_images} total → {verb} {res.removed}, kept {res.kept}")
@@ -155,7 +155,7 @@ def clean(
     if res.backup:
         console.print(f"backup: {res.backup}")
     if res.dry_run and res.removed:
-        console.print("[dim]dry-run — rerun with --apply to write changes[/dim]")
+        console.print("[dim]dry-run — omit --dry-run to write changes[/dim]")
     if not res.dry_run and active:
         console.print("[yellow]Restart the session (close & re-resume) to see this take effect.[/yellow]")
 
@@ -189,7 +189,7 @@ def doctor(
         return
     for s, reasons in problems:
         console.print(f"[yellow]⚠[/yellow] [bold]{s.tool}[/bold] {s.id[:12]} — " + "; ".join(reasons))
-        console.print(f"    fix: [cyan]vac clean {s.id} --keep 3 --apply[/cyan]")
+        console.print(f"    fix: [cyan]vac clean {s.id} --keep 3[/cyan]")
 
 
 @app.command()
@@ -198,7 +198,7 @@ def prune(
     oldest: float = typer.Option(30.0, help="Free ~this %% of CONTEXT TOKENS from the oldest side"),
     mode: str = typer.Option("outputs", help="'outputs' (drop old tool outputs, keep text) | 'hard' (also drop old text)"),
     max_field: int = typer.Option(2000, help="Truncate tool outputs longer than this many chars (in the old region)"),
-    apply: bool = typer.Option(False, "--apply", help="Actually write (default is dry-run)"),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Preview without writing"),
     force: bool = typer.Option(False, "--force", help="Edit even if the session looks active"),
     no_backup: bool = typer.Option(False, "--no-backup", help="Do not create a .bak"),
 ):
@@ -211,11 +211,11 @@ def prune(
         console.print("[red]--mode must be 'outputs' or 'hard'[/red]")
         raise typer.Exit(2)
     active = store.is_active(path)
-    if active and apply and not force:
+    if active and not dry_run and not force:
         console.print("[red]Session looks active (locked/recently written). "
                       "Close it, or pass --force.[/red]")
         raise typer.Exit(2)
-    if active and apply and force:
+    if active and not dry_run and force:
         console.print("[yellow]⚠ this session is ACTIVE — on-disk edits do NOT change the running "
                       "session and its next save may overwrite them. Close and re-resume it "
                       "for the context to actually drop.[/yellow]")
@@ -223,7 +223,7 @@ def prune(
     res = prune_oldest(
         path, store.is_image_block, store.replace_image,
         oldest_pct=oldest, mode=mode, max_field_bytes=max_field,
-        dry_run=not apply, backup=not no_backup,
+        dry_run=dry_run, backup=not no_backup,
     )
     if not res.valid:
         console.print("[red]Aborted: pruning would produce invalid JSON — nothing written.[/red]")
@@ -241,7 +241,7 @@ def prune(
         console.print("[yellow]note:[/yellow] old region is text-heavy; dropping tool output alone "
                       "did not reach the target. Use [cyan]--mode hard[/cyan] to also drop old text.")
     if res.dry_run and res.freed_tokens:
-        console.print("[dim]dry-run - rerun with --apply to write changes[/dim]")
+        console.print("[dim]dry-run - omit --dry-run to write changes[/dim]")
     if not res.dry_run and active:
         console.print("[yellow]Restart the session (close & re-resume) — the running session won't "
                       "reflect this until reload.[/yellow]")
@@ -253,7 +253,7 @@ def archive(
         help="Archive sessions last used more than this ago (e.g. 60d, 2w)"),
     tool: Optional[str] = typer.Option(None, help="Filter by tool: kiro | claude"),
     out: Optional[str] = typer.Option(None, help="Archive file path (default ~/.kiro/sessions/vac-archive-<ts>.tar.gz)"),
-    apply: bool = typer.Option(False, "--apply", help="Actually archive + remove (default is dry-run)"),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Preview without archiving/removing"),
     include_active: bool = typer.Option(False, "--include-active",
         help="Also archive locked/active sessions (not recommended)"),
 ):
@@ -291,8 +291,8 @@ def archive(
     if len(selected) > 20:
         console.print(f"  … and {len(selected) - 20} more")
 
-    if not apply:
-        console.print("[dim]dry-run — rerun with --apply to archive + remove[/dim]")
+    if dry_run:
+        console.print("[dim]dry-run — omit --dry-run to archive + remove[/dim]")
         return
 
     from datetime import datetime
@@ -321,7 +321,7 @@ def name(
     llm_cmd: str = typer.Option("claude -p", "--llm-cmd", help="Titler command: reads a digest on stdin, prints a title"),
     tool: Optional[str] = typer.Option(None, help="Filter by tool: kiro | claude"),
     limit: int = typer.Option(25, help="Max sessions to name in one run"),
-    apply: bool = typer.Option(False, "--apply", help="Write titles (default: dry-run preview)"),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Preview titles without writing"),
     no_backup: bool = typer.Option(False, "--no-backup", help="Don't back up metadata before writing"),
 ):
     """AI-name untitled sessions from their content (like the ChatGPT/Claude
@@ -356,7 +356,7 @@ def name(
             skipped += 1
             continue
         console.print(f"{s.tool} {s.id[:12]}  [dim]{cur[:32]}[/dim] → [bold]{title}[/bold]")
-        if apply:
+        if not dry_run:
             mp = s.path.with_suffix(".json")
             if not no_backup and mp.exists():
                 shutil.copy2(mp, mp.with_suffix(".json.bak"))
@@ -366,10 +366,10 @@ def name(
                 console.print(f"    [yellow]cannot persist title for {s.tool} (no writable title store)[/yellow]")
                 skipped += 1
 
-    if apply:
+    if not dry_run:
         console.print(f"\n[green]named {named}[/green], skipped {skipped}")
     else:
-        console.print(f"\n[dim]dry-run — {len(targets[:limit])} proposed; rerun with --apply to write[/dim]")
+        console.print(f"\n[dim]dry-run — {len(targets[:limit])} proposed; omit --dry-run to write[/dim]")
 
 
 if __name__ == "__main__":
