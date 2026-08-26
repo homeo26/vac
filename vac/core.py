@@ -173,12 +173,15 @@ _IMG_TOKENS = 1500  # rough per-image token cost the model sees (not the file by
 
 def entry_tokens(o) -> int:
     """Approximate model-visible tokens for one log entry (chars/4 of text +
-    a flat cost per image). This is what the context % actually counts — NOT
+    a flat cost per image). Handles BOTH Kiro shapes (kind:text/data, Text,
+    toolUse) and Claude Code shapes (type:text/text, thinking, string
+    message.content, type:image). This is what the context % counts — NOT
     file bytes."""
     chars = [0]
     imgs = [0]
     def c(x):
         if isinstance(x, dict):
+            # Kiro shapes
             if x.get("kind") == "text" and isinstance(x.get("data"), str):
                 chars[0] += len(x["data"])
             if x.get("kind") == "thinking" and isinstance(x.get("text"), str):
@@ -187,7 +190,16 @@ def entry_tokens(o) -> int:
                 chars[0] += len(x["Text"])
             if x.get("kind") == "toolUse" and isinstance(x.get("input"), (dict, list)):
                 chars[0] += len(json.dumps(x["input"]))
-            if x.get("kind") == "image" or ("Image" in x and isinstance(x.get("Image"), dict)):
+            # Claude Code shapes
+            if x.get("type") == "text" and isinstance(x.get("text"), str):
+                chars[0] += len(x["text"])
+            if x.get("type") == "thinking" and isinstance(x.get("thinking"), str):
+                chars[0] += len(x["thinking"])
+            if isinstance(x.get("content"), str):  # Claude message.content as string
+                chars[0] += len(x["content"])
+            # images (both schemas)
+            if x.get("kind") == "image" or x.get("type") == "image" \
+                    or ("Image" in x and isinstance(x.get("Image"), dict)):
                 imgs[0] += 1
             for v in x.values():
                 c(v)
@@ -199,63 +211,76 @@ def entry_tokens(o) -> int:
 
 
 def _clean_entry(o, is_image, replace_image, mode, max_field_bytes, note, counters):
-    """Return a cleaned copy of one entry. mode:
-      'outputs' — drop tool-result bodies + strip images, KEEP prompt/assistant text
-      'hard'    — collapse the entry's content to a stub (drops everything)
+    """Return a cleaned copy of one entry. Schema-aware for Kiro AND Claude:
+      'outputs' — truncate long tool-output text + strip images, KEEP prompt/assistant text
+      'hard'    — also collapse assistant/prompt text to stubs (guarantees the target)
     """
     if mode == "hard":
-        # keep the kind so structure/pairing survives, but gut the payload
-        kind = o.get("kind")
-        if kind == "ToolResults":
-            counters["trunc"] += 1
-            return {"kind": "ToolResults", "data": {"content": [
-                {"kind": "text", "data": "[old turn pruned by vac to free context]"}]}}
-        # For assistant/prompt/thinking entries, collapse text to a stub.
         def gut(x):
             if isinstance(x, dict):
                 if is_image(x):
                     counters["img"] += 1
                     return replace_image(x, note)
-                if x.get("kind") == "text" and isinstance(x.get("data"), str) and len(x["data"]) > 40:
-                    counters["trunc"] += 1
-                    return {**{k: v for k, v in x.items()}, "data": "[pruned]"}
                 if x.get("kind") == "thinking":
                     return {"kind": "thinking", "text": "", "signature": x.get("signature", ""),
                             "redactedContent": x.get("redactedContent")}
-                return {k: gut(v) for k, v in x.items()}
+                if x.get("type") == "thinking":
+                    return {**x, "thinking": ""}
+                new = {}
+                for k, v in x.items():
+                    # Kiro text node: {kind:text, data:str}
+                    if k == "data" and x.get("kind") == "text" and isinstance(v, str) and len(v) > 40:
+                        counters["trunc"] += 1; new[k] = "[pruned]"
+                    # Claude text node: {type:text, text:str}
+                    elif k == "text" and x.get("type") == "text" and isinstance(v, str) and len(v) > 40:
+                        counters["trunc"] += 1; new[k] = "[pruned]"
+                    # Claude message.content as a bare string
+                    elif k == "content" and isinstance(v, str) and len(v) > 40:
+                        counters["trunc"] += 1; new[k] = "[pruned]"
+                    else:
+                        new[k] = gut(v)
+                return new
             if isinstance(x, list):
                 return [gut(v) for v in x]
             return x
+        # ToolResults entries: gut the whole payload (Kiro)
+        if o.get("kind") == "ToolResults":
+            counters["trunc"] += 1
+            return {"kind": "ToolResults", "data": {"content": [
+                {"kind": "text", "data": "[old turn pruned by vac to free context]"}]}}
         return gut(o)
 
-    # mode == 'outputs'
-    in_tr = o.get("kind") == "ToolResults"
-    def walk(x):
+    # mode == 'outputs' — truncate long tool-output text (both schemas), strip images
+    def walk(x, in_tr):
         if isinstance(x, dict):
             if is_image(x):
                 counters["img"] += 1
                 return replace_image(x, note)
+            here_tr = in_tr or x.get("kind") == "ToolResults" or x.get("type") == "tool_result"
             new = {}
             for k, v in x.items():
-                if in_tr and k == "data" and isinstance(v, str) and x.get("kind") == "text" \
-                        and len(v) > max_field_bytes:
+                if here_tr and k == "data" and x.get("kind") == "text" \
+                        and isinstance(v, str) and len(v) > max_field_bytes:
                     nv, saved = _truncate(v, max_field_bytes)
-                    if saved:
-                        counters["trunc"] += 1
+                    if saved: counters["trunc"] += 1
                     new[k] = nv
-                elif in_tr and set(x.keys()) == {"Text"} and k == "Text" and isinstance(v, str) \
-                        and len(v) > max_field_bytes:
+                elif here_tr and k == "text" and x.get("type") == "text" \
+                        and isinstance(v, str) and len(v) > max_field_bytes:
                     nv, saved = _truncate(v, max_field_bytes)
-                    if saved:
-                        counters["trunc"] += 1
+                    if saved: counters["trunc"] += 1
+                    new[k] = nv
+                elif here_tr and set(x.keys()) == {"Text"} and k == "Text" \
+                        and isinstance(v, str) and len(v) > max_field_bytes:
+                    nv, saved = _truncate(v, max_field_bytes)
+                    if saved: counters["trunc"] += 1
                     new[k] = nv
                 else:
-                    new[k] = walk(v)
+                    new[k] = walk(v, here_tr)
             return new
         if isinstance(x, list):
-            return [walk(v) for v in x]
+            return [walk(v, in_tr) for v in x]
         return x
-    return walk(o)
+    return walk(o, o.get("kind") == "ToolResults")
 
 
 def prune_oldest(

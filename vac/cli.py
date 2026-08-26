@@ -193,9 +193,10 @@ def prune(
     force: bool = typer.Option(False, "--force", help="Edit even if the session looks active"),
     no_backup: bool = typer.Option(False, "--no-backup", help="Do not create a .bak"),
 ):
-    """Compact/clean only the oldest N%% of a session — the operation Kiro's
-    /compact and /rewind can't do. Sheds old images and bulky tool outputs
-    while keeping recent turns and the whole dialogue narrative intact."""
+    """Free a percentage of the CONTEXT TOKENS from the oldest side — the
+    token-reducing 'compact the first N%' that Kiro's /compact and /rewind
+    can't do. Reports tokens freed (what actually moves the context %), not
+    just file bytes. Works for both Kiro and Claude Code sessions."""
     store, path = _find(id_or_path)
     if mode not in ("outputs", "hard"):
         console.print("[red]--mode must be 'outputs' or 'hard'[/red]")

@@ -16,7 +16,20 @@ image dimensions exceed max allowed size for many-image requests: 2000 pixels
 pipx install vac-cli      # installs the `vac` command
 ```
 
-## Usage
+## Commands
+
+| Command | What it does |
+|---|---|
+| `vac list` | Inventory sessions (size, image count, age, live?, at-risk?). Flags: `--older-than 60d`, `--tool kiro\|claude`, `--sort size\|images\|updated\|age`, `--json` |
+| `vac analyze <id>` | Show what's consuming one session: size, image count, largest entry, active state |
+| `vac clean <id>` | GC image blocks (fixes file-size/payload crashes & the 2000px many-image error). `--keep N` retains the newest N images. Dry-run unless `--apply` |
+| `vac prune <id>` | Free ~N% of **context tokens** from the oldest side (the "compact the first N%" Kiro can't do). `--oldest N`, `--mode outputs\|hard`, `--max-field <chars>`. Dry-run unless `--apply` |
+| `vac doctor` | Flag sessions likely wedged: many images, oversized single entry (context bomb), or oversized session |
+| `vac archive` | tar.gz + remove sessions older than a threshold (by real last-used time). `--older-than 60d`, `--tool`, `--include-active`. Reversible; dry-run unless `--apply` |
+
+Global safety: `clean`/`prune`/`archive` are **dry-run by default**, write a `.bak`, refuse to edit active/locked sessions (use `--force`), and JSON-validate before writing. Works across **Kiro CLI** and **Claude Code**.
+
+## Usage examples
 
 ```bash
 vac list                    # inventory sessions: size, image count, live?, at-risk?
