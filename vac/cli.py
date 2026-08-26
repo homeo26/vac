@@ -318,15 +318,18 @@ def _needs_title(info, include_generic: bool) -> bool:
 def name(
     id_or_path: Optional[str] = typer.Argument(None, help="Name one session; omit to scan all untitled"),
     include_generic: bool = typer.Option(False, "--include-generic", help="Also re-title short/generic names"),
+    all_: bool = typer.Option(False, "--all", help="Re-title every matching session, even ones with a good title"),
+    newer_than: Optional[str] = typer.Option(None, "--newer-than", help="Only sessions used within this window (e.g. 30d, 2w)"),
     llm_cmd: str = typer.Option("claude -p", "--llm-cmd", help="Titler command: reads a digest on stdin, prints a title"),
     tool: Optional[str] = typer.Option(None, help="Filter by tool: kiro | claude"),
     limit: int = typer.Option(25, help="Max sessions to name in one run"),
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Preview titles without writing"),
     no_backup: bool = typer.Option(False, "--no-backup", help="Don't back up metadata before writing"),
 ):
-    """AI-name untitled sessions from their content (like the ChatGPT/Claude
-    sidebar). Uses a local LLM CLI (`claude -p` by default) — no API key needed.
-    Titles persist only where the tool has a writable title store (Kiro)."""
+    """AI-name sessions from their content (like the ChatGPT/Claude sidebar).
+    Uses a local LLM CLI (`claude -p` by default) — no API key needed. Titles
+    persist only where the tool has a writable title store (Kiro)."""
+    cutoff = parse_duration(newer_than).total_seconds() / 86400.0 if newer_than else None
     # Build (store, SessionInfo) targets.
     targets = []
     if id_or_path:
@@ -339,7 +342,11 @@ def name(
             if tool and store.tool_name != tool:
                 continue
             for s in store.list_sessions():
-                if _needs_title(s, include_generic) and not s.active:
+                if s.active:
+                    continue
+                if cutoff is not None and age_days(s.updated, s.path) > cutoff:
+                    continue
+                if all_ or _needs_title(s, include_generic):
                     targets.append((store, s))
 
     if not targets:
