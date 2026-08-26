@@ -241,5 +241,5 @@ def test_clean_embeds_source_path(tmp_path):
     assert build_image_path_map(f).get(tid) == ["/tmp/shot.png"]
     clean_images(f, s.is_image_block, s.replace_image, keep=0, dry_run=False, backup=False)
     txt = f.read_text()
-    assert "/tmp/shot.png" in txt and "re-read" in txt
+    assert "/tmp/shot.png" in txt and "do not re-load" in txt
     assert valid_jsonl(f)

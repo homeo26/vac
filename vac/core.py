@@ -127,7 +127,9 @@ def _img_note(default_note: str, id2paths: dict, tid) -> str:
     paths = id2paths.get(tid) if tid else None
     if paths:
         p = paths[0] if len(paths) == 1 else ", ".join(paths)
-        return f"[image cleared by vac — re-read {p} if you still need it]"
+        # Passive on purpose: record the source for recovery, but explicitly
+        # discourage auto re-reading (which would re-inflate the context).
+        return f"[image removed by vac to save context (source: {p}); do not re-load unless the user explicitly asks]"
     return default_note
 
 
