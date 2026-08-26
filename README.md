@@ -32,6 +32,9 @@ uv tool install vac-cli
 
 **Homebrew (macOS/Linux):**
 ```bash
+brew tap homeo26/vac
+brew install vac          # short form after tapping
+# or one-shot without tapping first:
 brew install homeo26/vac/vac
 ```
 
