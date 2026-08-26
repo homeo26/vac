@@ -63,65 +63,118 @@ pip install -e ".[test]"        # or:  uv tool install .
 
 ## Commands
 
-| Command | What it does |
+At a glance:
+
+| Command | Purpose |
 |---|---|
-| `vac list` | Inventory sessions (size, image count, age, live?, at-risk?). Flags: `--older-than 60d`, `--tool kiro\|claude`, `--sort size\|images\|updated\|age`, `--json` |
-| `vac analyze <id>` | Show what's consuming one session: size, image count, largest entry, active state |
-| `vac clean <id>` | GC image blocks (fixes file-size/payload crashes & the 2000px many-image error). `--keep N` retains the newest N images. Dry-run unless `--apply` |
-| `vac prune <id>` | Free ~N% of **context tokens** from the oldest side (the "compact the first N%" Kiro can't do). `--oldest N`, `--mode outputs\|hard`, `--max-field <chars>`. Dry-run unless `--apply` |
-| `vac doctor` | Flag sessions likely wedged: many images, oversized single entry (context bomb), or oversized session |
-| `vac archive` | tar.gz + remove sessions older than a threshold (by real last-used time). `--older-than 60d`, `--tool`, `--include-active`. Reversible; dry-run unless `--apply` |
+| [`vac list`](#vac-list) | Inventory sessions (size, images, age, live?, at-risk?) |
+| [`vac analyze`](#vac-analyze-idpath) | Break down what's consuming one session |
+| [`vac clean`](#vac-clean-idpath) | Strip embedded images (fixes 2000px / payload crashes) |
+| [`vac prune`](#vac-prune-idpath) | Free a % of context **tokens** from the oldest turns |
+| [`vac doctor`](#vac-doctor) | Find sessions likely to be wedged |
+| [`vac archive`](#vac-archive) | Archive + remove old sessions (reversible) |
 
-Global safety: `clean`/`prune`/`archive` are **dry-run by default**, write a `.bak`, refuse to edit active/locked sessions (use `--force`), and JSON-validate before writing. Works across **Kiro CLI** and **Claude Code**.
+**Global conventions:** `<id>` is a session id or a path to a `.jsonl`. Commands that write (`clean`, `prune`, `archive`) are **dry-run by default** — add `--apply` to write. They create a `.bak`, refuse to edit an active/locked session (override with `--force`), and JSON-validate before writing. All commands support both **Kiro CLI** and **Claude Code** sessions.
 
-## Usage examples
+---
+
+### `vac list`
+Inventory sessions across installed tools.
+
+| Option | Description |
+|---|---|
+| `--older-than <dur>` | Only sessions last used ≥ this ago (`60d`, `2w`, `12h`, `30m`) |
+| `--tool kiro\|claude` | Restrict to one tool |
+| `--sort size\|images\|updated\|age` | Sort order (default `size`) |
+| `--json` | Machine-readable output |
 
 ```bash
-vac list                    # inventory sessions: size, image count, live?, at-risk?
-vac analyze <id|path>       # what's consuming space in one session
-vac clean <id> --keep 3     # GC images, keep the last 3 (dry-run by default)
-vac clean <id> --keep 3 --apply   # actually write (creates a .bak)
-vac prune <id> --oldest 30  # clean ONLY the oldest 30% of the session (dry-run)
-vac prune <id> --oldest 30 --apply
-vac doctor                  # find sessions likely wedged (many/oversized images)
-vac list --older-than 60d   # sessions not used in 60+ days (by real last-used time)
-vac archive --older-than 60d        # preview archiving old sessions (dry-run)
-vac archive --older-than 60d --apply  # tar.gz + remove them (reversible)
-vac list --json             # machine-readable everywhere
+vac list                        # everything, biggest first
+vac list --older-than 60d --sort age
 ```
 
-### Age filtering & archiving
+### `vac analyze <id|path>`
+Show what's consuming one session: total size, image count, largest single entry, and whether it's active. No options.
 
-`--older-than` accepts `60d`, `2w`, `12h`, `30m`. Age is computed from each
-session's real **last-used time** (`updated_at` in metadata), not the file
-mtime — so sessions that `vac` itself rewrote are not misflagged as recent.
+```bash
+vac analyze 22a4b1a5-b8f1-44e0-98ae-502b95f030b5
+```
 
-`vac archive --older-than N` tar.gz's every matching session (log + metadata +
-history) into `~/.kiro/sessions/vac-archive-<timestamp>.tar.gz` and removes the
-originals. It's **reversible** — `tar -xzf <archive> -C <dir>` restores any
-session. Dry-run by default; active/locked sessions are skipped unless
-`--include-active`.
+### `vac clean <id|path>`
+Garbage-collect embedded image blocks (both Kiro forms + Claude). Fixes the 2000px many-image error and payload-size crashes. Shrinks **file bytes** (images are cheap in tokens — use `prune` for context relief).
 
-### `vac prune` — free a percentage of the context (by tokens)
+| Option | Description |
+|---|---|
+| `--keep N` | Keep the newest N images, remove the rest (default `0` = remove all) |
+| `--apply` | Write changes (default: dry-run) |
+| `--force` | Edit even if the session looks active |
+| `--no-backup` | Don't write a `.bak` |
 
-Neither Kiro's `/compact` nor `/rewind` can free a chosen slice of context from
-the *start*. `vac prune --oldest N` does: it frees ~N% of the **context tokens**
-(what the context % actually counts — not file bytes) from the oldest side,
-walking oldest→newest and cleaning entries until the token target is met.
+```bash
+vac clean <id> --keep 1            # preview: drop all but the newest image
+vac clean <id> --keep 1 --apply    # write it
+```
 
-Modes:
-- `--mode outputs` (default) — drop old tool-output bodies / strip images / truncate
-  old tool text, **keeping** prompts and assistant text. Non-lossy for the dialogue,
-  but frees less if the old region is mostly text (it tells you and suggests `hard`).
-- `--mode hard` — also collapse old assistant/prompt text to stubs, guaranteeing it
-  reaches the target. Loses old detail, but genuinely frees the requested %.
+### `vac prune <id|path>`
+Free ~N% of the session's **context tokens** from the oldest side — the "compact the first N%" that Kiro's `/compact` and `/rewind` can't do. Walks oldest→newest, cleaning until the token target is hit.
 
-It reports tokens freed and % of context; user prompts are kept as anchors; the
-result is JSON-validated before writing. Dry-run + `.bak` by default.
+| Option | Description |
+|---|---|
+| `--oldest N` | Target: free ~N% of context tokens from the oldest side (default `30`) |
+| `--mode outputs` | (default) Drop old tool-output bodies / strip images, **keep** prompts + assistant text (non-lossy for dialogue; may free less) |
+| `--mode hard` | Also collapse old assistant/prompt text — **guarantees** the target, loses old detail |
+| `--max-field <chars>` | `outputs` mode: truncate tool outputs longer than this |
+| `--apply` / `--force` / `--no-backup` | As above |
 
-Note: `vac clean` (image GC) shrinks *file bytes* — great for payload-size crashes
-and disk — but images are cheap in tokens, so use `prune` (especially `--mode hard`)
-to actually lower the context % and delay auto-compaction.
+```bash
+vac prune <id> --oldest 20                 # preview token savings (safe)
+vac prune <id> --oldest 20 --mode hard --apply
+```
+
+### `vac doctor`
+Scan all sessions and flag the ones likely to be wedged — too many images (2000px risk), an oversized single entry (context bomb), or an oversized session. Prints the exact fix command per finding.
+
+| Option | Description |
+|---|---|
+| `--json` | Machine-readable output |
+
+```bash
+vac doctor
+```
+
+### `vac archive`
+Archive (tar.gz) and remove sessions older than a threshold, by real last-used time. Reversible — extract the tarball to restore.
+
+| Option | Description |
+|---|---|
+| `--older-than <dur>` | **Required.** Archive sessions last used ≥ this ago (`60d`, `2w`) |
+| `--tool kiro\|claude` | Restrict to one tool |
+| `--include-active` | Also archive locked/active sessions (not recommended) |
+| `--apply` | Write (default: dry-run preview) |
+
+```bash
+vac archive --older-than 60d                # preview what would be archived
+vac archive --older-than 60d --apply        # tar.gz -> ~/.kiro/sessions/vac-archive-<ts>.tar.gz
+```
+
+## Key concepts
+
+**Tokens vs. bytes — which command to use.** Kiro's context **%** counts *tokens*,
+not file size. An embedded image is megabytes on disk but only ~1–2K tokens.
+
+- Fixing a *file-size* problem (2000px image error, "connection closed", disk)?
+  → **`vac clean`** (removes image bytes).
+- Lowering the *context %* / delaying auto-compaction? → **`vac prune`** (removes
+  text tokens). `--mode hard` guarantees the target; `--mode outputs` is non-lossy
+  for the dialogue but frees less.
+
+**Age is real last-used time.** `--older-than` and the age column use each session's
+`updated_at` metadata, not the file mtime — so sessions that `vac` itself rewrote
+aren't misflagged as recently used. Durations: `60d`, `2w`, `12h`, `30m`.
+
+**Archiving is reversible.** `vac archive` tar.gz's each session (log + metadata +
+history) to `~/.kiro/sessions/vac-archive-<timestamp>.tar.gz`; restore with
+`tar -xzf <archive> -C <dir>`.
 
 ## Safety
 
