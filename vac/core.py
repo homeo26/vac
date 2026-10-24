@@ -437,6 +437,159 @@ def prune_oldest(
                        before, after, total_tokens, target, freed, bkp, dry_run, valid)
 
 
+# --- v3 / KAS sessions --------------------------------------------------------
+#
+# The v3 log is one event per line: {"id","timestamp","payload":{"type":...}}.
+# What the model sees is the text of user / assistant / tool_call / tool_result
+# payloads that come AFTER the last compaction tombstone; everything before it
+# was summarised and costs no context, so pruning there frees nothing.
+
+_TRIM_NOTE = "\n…[{n} chars trimmed by vac to free context; re-run or re-read if needed]…\n"
+SCHEMA_TOOLS = ("tool_load", "disclose_context")  # tool/skill definitions, read once
+
+
+def _v3_chars(p: dict) -> int:
+    """Model-visible characters of one v3 payload."""
+    t = p.get("type")
+    if t in ("tool_result", "assistant", "user"):
+        c = p.get("content")
+        return len(c) if isinstance(c, str) else 0
+    if t == "tool_call":
+        return len(json.dumps(p.get("args")))
+    return 0
+
+
+def _v3_cut(s, limit: int, counters: dict, key: str):
+    """Keep the first 2/3 and last 1/3 of `limit` chars, mark the gap.
+    Text that already carries a trim note is left alone: the note itself
+    makes it longer than `limit`, and re-cutting it would erode it a little
+    on every run without freeing anything that matters."""
+    if not isinstance(s, str) or len(s) <= limit or "trimmed by vac" in s:
+        return s
+    gap = len(s) - limit
+    counters[key] = counters.get(key, 0) + 1
+    counters["chars"] = counters.get("chars", 0) + gap
+    head = limit * 2 // 3
+    return s[:head] + _TRIM_NOTE.format(n=gap) + s[-(limit - head):]
+
+
+def is_v3_log(log_path: Path) -> bool:
+    try:
+        with log_path.open() as fh:
+            first = fh.readline()
+        return "payload" in json.loads(first)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return False
+
+
+def v3_live_start(entries: list) -> int:
+    """Index of the first entry the model still sees (after the last compaction)."""
+    last = -1
+    for i, e in enumerate(entries):
+        if e.get("payload", {}).get("type") == "tombstone":
+            last = i
+    return last + 1
+
+
+def v3_context_pct(entries: list):
+    """Last context-usage reading Kiro recorded, or None."""
+    pct = None
+    for e in entries:
+        p = e.get("payload", {})
+        v = p.get("value")
+        if p.get("type") == "session_metadata" and isinstance(v, dict) and "usagePercentage" in v:
+            pct = v["usagePercentage"]
+    return pct
+
+
+@dataclass
+class V3PruneResult:
+    total_entries: int
+    live_start: int          # first line after the last compaction
+    trim_end: int            # last trimmed line + 1; the rest is kept whole
+    counts: dict             # what was trimmed, by kind
+    freed_tokens: int
+    live_tokens: int
+    context_pct: float | None
+    before_bytes: int
+    after_bytes: int
+    backup: Path | None
+    dry_run: bool
+    valid: bool
+
+
+def prune_v3(
+    log_path: Path,
+    keep_recent_pct: float = 15.0,
+    schema_max: int = 300,
+    big_threshold: int = 8000,
+    big_max: int = 1500,
+    output_max: int = 2500,
+    dry_run: bool = True,
+    backup: bool = True,
+) -> V3PruneResult:
+    """Free context in a v3 session by shortening what the agent has already used.
+
+    Only the part after the last compaction is touched (earlier lines cost no
+    context), and the newest ``keep_recent_pct`` percent of that part is kept
+    whole so the current work is unaffected. In the rest:
+      - tool/skill definition dumps (tool_load, disclose_context) -> schema_max chars
+      - tool outputs longer than big_threshold                     -> big_max chars
+      - other tool outputs                                         -> output_max chars
+      - inline images are removed (a note replaces pasted ones)
+    User messages, assistant replies and tool-call arguments are never changed,
+    and every line and every tool call/result pair is kept.
+    """
+    raw = log_path.read_text().splitlines()
+    before = log_path.stat().st_size
+    entries = [json.loads(l) for l in raw if l.strip()]
+    n = len(entries)
+    live = v3_live_start(entries)
+    end = live + int((n - live) * (100.0 - max(0.0, min(100.0, keep_recent_pct))) / 100.0)
+    live_tokens = sum(_v3_chars(e["payload"]) for e in entries[live:]) // 4
+
+    tool_of = {e["payload"]["toolCallId"]: e["payload"].get("toolName", "")
+               for e in entries if e.get("payload", {}).get("type") == "tool_call"}
+    counts: dict = {}
+    for e in entries[live:end]:
+        p = e["payload"]
+        t = p.get("type")
+        if p.get("images"):
+            k = len(p.pop("images"))
+            counts["images"] = counts.get("images", 0) + k
+            if t == "user":
+                p["content"] = (p.get("content") or "") + f"\n[{k} pasted image(s) removed by vac to save context]"
+        if t != "tool_result":
+            continue
+        c = p.get("content")
+        if tool_of.get(p.get("toolCallId"), "") in SCHEMA_TOOLS:
+            p["content"] = _v3_cut(c, schema_max, counts, "schemas")
+        elif isinstance(c, str) and len(c) > big_threshold:
+            p["content"] = _v3_cut(c, big_max, counts, "big_outputs")
+        else:
+            p["content"] = _v3_cut(c, output_max, counts, "outputs")
+
+    new_text = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries)
+    # Refuse to write if pruning changed which tool calls and results exist
+    # (a pairing that was already broken before is not ours to fix).
+    def pairs(objs):
+        return {(o["payload"]["type"], o["payload"]["toolCallId"]) for o in objs
+                if o.get("payload", {}).get("type") in ("tool_call", "tool_result")}
+    valid = len(entries) == n and pairs(entries) == pairs(json.loads(l) for l in raw if l.strip())
+
+    bkp = None
+    changed = counts.get("chars", 0) > 0 or counts.get("images", 0) > 0
+    if not dry_run and valid and changed:
+        if backup:
+            bkp = log_path.with_suffix(log_path.suffix + ".bak")
+            shutil.copy2(log_path, bkp)
+        log_path.write_text(new_text, encoding="utf-8")
+
+    return V3PruneResult(n, live, end, counts, counts.get("chars", 0) // 4, live_tokens,
+                         v3_context_pct(entries), before, len(new_text.encode("utf-8")),
+                         bkp, dry_run, valid)
+
+
 # --- Age filtering & archiving -----------------------------------------------
 
 import re as _re

@@ -243,3 +243,83 @@ def test_clean_embeds_source_path(tmp_path):
     txt = f.read_text()
     assert "/tmp/shot.png" in txt and "do not re-load" in txt
     assert valid_jsonl(f)
+
+
+# --- Kiro v3 prune ----------------------------------------------------------
+
+from vac.core import prune_v3, is_v3_log, v3_live_start
+
+
+def _v3(path, payloads):
+    with open(path, "w") as fh:
+        for i, p in enumerate(payloads):
+            fh.write(json.dumps({"id": str(i), "timestamp": "2026-10-01T00:00:00Z", "payload": p}) + "\n")
+
+
+def _turn(tid, tool, out):
+    return [{"type": "tool_call", "toolCallId": tid, "toolName": tool, "args": {"command": "x"}},
+            {"type": "tool_result", "toolCallId": tid, "content": out, "success": True}]
+
+
+def _v3_session(tmp_path, n_turns=20, tombstone_at=None):
+    payloads = [{"type": "user", "content": "start", "images": [{"data": "QUJD", "mimeType": "image/png"}]}]
+    for k in range(n_turns):
+        if tombstone_at is not None and k == tombstone_at:
+            payloads.append({"type": "tombstone", "kind": "summarization"})
+        payloads.append({"type": "user", "content": f"step {k}"})
+        payloads += _turn(f"t{k}", "tool_load" if k == 0 else "execute_bash", "y" * (20000 if k % 2 else 4000))
+        payloads.append({"type": "assistant", "content": "z" * 5000})
+    p = tmp_path / "messages.jsonl"
+    _v3(p, payloads)
+    return p
+
+
+def test_v3_prune_trims_outputs_only(tmp_path):
+    p = _v3_session(tmp_path)
+    assert is_v3_log(p)
+    before = [json.loads(l) for l in p.read_text().splitlines()]
+    res = prune_v3(p, dry_run=False, backup=False)
+    after = [json.loads(l) for l in p.read_text().splitlines()]
+    assert res.valid and res.freed_tokens > 0
+    assert len(after) == len(before)  # no lines dropped
+    for b, a in zip(before, after):
+        bt = b["payload"]["type"]
+        if bt in ("user", "assistant", "tool_call"):
+            # messages, replies and tool args are never shortened
+            assert a["payload"].get("content") == b["payload"].get("content") or "image" in a["payload"]["content"]
+            assert a["payload"].get("args") == b["payload"].get("args")
+    assert "images" not in after[0]["payload"]
+    assert "pasted image" in after[0]["payload"]["content"]
+    assert res.counts["schemas"] == 1
+
+
+def test_v3_prune_keeps_recent_whole(tmp_path):
+    p = _v3_session(tmp_path)
+    prune_v3(p, keep_recent_pct=25, dry_run=False, backup=False)
+    after = [json.loads(l) for l in p.read_text().splitlines()]
+    tail = after[int(len(after) * 0.8):]
+    assert not any("trimmed by vac" in (e["payload"].get("content") or "") for e in tail)
+
+
+def test_v3_prune_skips_compacted_part(tmp_path):
+    p = _v3_session(tmp_path, tombstone_at=10)
+    before = [json.loads(l) for l in p.read_text().splitlines()]
+    live = v3_live_start(before)
+    assert live > 0
+    prune_v3(p, dry_run=False, backup=False)
+    after = [json.loads(l) for l in p.read_text().splitlines()]
+    assert after[:live] == before[:live]  # summarised lines cost no context: untouched
+
+
+def test_v3_prune_dry_run_writes_nothing(tmp_path):
+    p = _v3_session(tmp_path)
+    raw = p.read_text()
+    res = prune_v3(p, dry_run=True)
+    assert res.freed_tokens > 0 and p.read_text() == raw and res.backup is None
+
+
+def test_v3_prune_is_idempotent(tmp_path):
+    p = _v3_session(tmp_path)
+    prune_v3(p, dry_run=False, backup=False)
+    again = prune_v3(p, dry_run=True)
+    assert again.freed_tokens == 0

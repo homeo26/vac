@@ -20,7 +20,7 @@ from rich.table import Table
 from .adapters import ALL_STORES, SessionStore
 from .core import (clean_images, count_images, max_line_bytes, prune_oldest,
                    parse_duration, age_days, session_file_group, archive_files,
-                   build_digest, generate_title)
+                   build_digest, generate_title, prune_v3, is_v3_log)
 
 app = typer.Typer(add_completion=False, help="Vacuum up cruft from AI coding-agent sessions.")
 console = Console()
@@ -195,9 +195,11 @@ def doctor(
 @app.command()
 def prune(
     id_or_path: str = typer.Argument(..., help="Session id or path to .jsonl"),
-    oldest: float = typer.Option(30.0, help="Free ~this %% of CONTEXT TOKENS from the oldest side"),
+    oldest: float = typer.Option(30.0, help="Free ~this %% of CONTEXT TOKENS from the oldest side (Kiro v1/Claude sessions)"),
     mode: str = typer.Option("outputs", help="'outputs' (drop old tool outputs, keep text) | 'hard' (also drop old text)"),
     max_field: int = typer.Option(2000, help="Truncate tool outputs longer than this many chars (in the old region)"),
+    keep_recent: float = typer.Option(15.0, "--keep-recent", help="Kiro v3: keep the newest N%% of the live part whole"),
+    cap: bool = typer.Option(False, "--cap", help="Kiro v3: also turn off auto-compaction for this session (runs to 100%%)"),
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Preview without writing"),
     force: bool = typer.Option(False, "--force", help="Edit even if the session looks active"),
     no_backup: bool = typer.Option(False, "--no-backup", help="Do not create a .bak"),
@@ -205,7 +207,12 @@ def prune(
     """Free a percentage of the CONTEXT TOKENS from the oldest side — the
     token-reducing 'compact the first N%' that Kiro's /compact and /rewind
     can't do. Reports tokens freed (what actually moves the context %), not
-    just file bytes. Works for both Kiro and Claude Code sessions."""
+    just file bytes. Works for Kiro (v1 and v3) and Claude Code sessions.
+
+    Kiro v3 sessions get a targeted prune instead of --oldest: only the part
+    after the last compaction is touched, the newest --keep-recent %% is left
+    whole, and only tool output, tool/skill definition dumps and inline images
+    are shortened. Your messages and the agent's replies are never changed."""
     store, path = _find(id_or_path)
     if mode not in ("outputs", "hard"):
         console.print("[red]--mode must be 'outputs' or 'hard'[/red]")
@@ -219,6 +226,12 @@ def prune(
         console.print("[yellow]⚠ this session is ACTIVE — on-disk edits do NOT change the running "
                       "session and its next save may overwrite them. Close and re-resume it "
                       "for the context to actually drop.[/yellow]")
+
+    if is_v3_log(path):
+        _prune_v3_cli(path, keep_recent, cap, dry_run, no_backup, active)
+        return
+    if cap:
+        console.print("[yellow]--cap only applies to Kiro v3 sessions; ignored.[/yellow]")
 
     res = prune_oldest(
         path, store.is_image_block, store.replace_image,
@@ -245,6 +258,52 @@ def prune(
     if not res.dry_run and active:
         console.print("[yellow]Restart the session (close & re-resume) — the running session won't "
                       "reflect this until reload.[/yellow]")
+
+
+def _set_session_cap(log_path: Path) -> bool:
+    """Turn off auto-compaction for one v3 session (it then runs to 100%)."""
+    meta = log_path.parent / "session.json"
+    try:
+        d = _json.loads(meta.read_text())
+    except (OSError, _json.JSONDecodeError):
+        return False
+    d["disableAutoCompaction"] = True
+    meta.write_text(_json.dumps(d, indent=2))
+    return True
+
+
+def _prune_v3_cli(path: Path, keep_recent: float, cap: bool, dry_run: bool, no_backup: bool, active: bool):
+    res = prune_v3(path, keep_recent_pct=keep_recent, dry_run=dry_run, backup=not no_backup)
+    if not res.valid:
+        console.print("[red]Aborted: pruning would change the session's tool calls — nothing written.[/red]")
+        raise typer.Exit(3)
+    c = res.counts
+    verb = "would free" if dry_run else "freed"
+    where = (f"lines {res.live_start}-{res.trim_end - 1} (after the last compaction)"
+             if res.live_start else f"lines 0-{res.trim_end - 1}")
+    pct = f", last recorded context {res.context_pct:.1f}%" if res.context_pct is not None else ""
+    console.print(f"session: {res.total_entries} lines{pct}")
+    console.print(f"trimmed {where}; newest {res.total_entries - res.trim_end} lines kept whole")
+    console.print(f"  {c.get('schemas', 0)} tool/skill definition dumps, {c.get('big_outputs', 0)} oversized outputs, "
+                  f"{c.get('outputs', 0)} other long outputs, {c.get('images', 0)} images")
+    share = (res.freed_tokens / res.live_tokens * 100) if res.live_tokens else 0
+    console.print(f"{verb}: ~{res.freed_tokens:,} tokens ({share:.0f}% of the live conversation)")
+    console.print(f"file:    {_human(res.before_bytes)} -> {_human(res.after_bytes)}")
+    if not dry_run and res.backup:
+        console.print(f"backup:  {res.backup}")
+    if res.freed_tokens == 0 and not c.get("images"):
+        console.print("[yellow]nothing to trim:[/yellow] the live part is mostly messages and replies, "
+                      "which vac doesn't change. Use /compact in the session for more room.")
+    if cap:
+        if dry_run:
+            console.print("would set: disableAutoCompaction = true (runs to 100%)")
+        elif _set_session_cap(path):
+            console.print("set:     disableAutoCompaction = true (runs to 100%; /compact before ~90%)")
+    if dry_run:
+        console.print("[dim]dry-run - omit --dry-run to write changes[/dim]")
+        return
+    console.print("[yellow]Kiro shows the OLD context % until the session's next turn. "
+                  "Close any window that has it open, then resume and send one short message.[/yellow]")
 
 
 @app.command()
