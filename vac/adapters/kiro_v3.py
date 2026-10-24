@@ -51,18 +51,38 @@ class KiroV3Store(SessionStore):
         return re.findall(r"^Image: (.+)$", content, re.M)
 
     def is_image_block(self, obj: dict) -> bool:
-        if not isinstance(obj, dict) or obj.get("type") != "tool_result":
+        if not isinstance(obj, dict):
+            return False
+        t = obj.get("type")
+        # Inline base64 images: tool_result.images[] (screenshots, image reads)
+        # and user.images[] (pasted into the prompt). These are sent to the
+        # model verbatim on every turn, independent of the text stub.
+        if t in ("tool_result", "user") and obj.get("images"):
+            return True
+        if t != "tool_result":
             return False
         c = obj.get("content")
         return isinstance(c, str) and bool(_IMG_STUB.match(c))
 
     def replace_image(self, obj: dict, note: str) -> dict:
-        paths = self._stub_paths(obj.get("content", ""))
+        out = dict(obj)
+        n_inline = len(out.pop("images", None) or [])
+        if obj.get("type") == "user":
+            # Keep the user's words; just record that pasted images were removed.
+            if n_inline:
+                out["content"] = (out.get("content") or "") + \
+                    f"\n[{n_inline} pasted image(s) removed by vac to save context]"
+            return out
+        c = obj.get("content", "")
+        paths = self._stub_paths(c) if isinstance(c, str) else []
         if paths and "source:" not in note:
             p = paths[0] if len(paths) == 1 else ", ".join(paths)
             note = (f"[image removed by vac to save context (source: {p}); "
                     "do not re-load unless the user explicitly asks]")
-        out = dict(obj)
+        if isinstance(c, str) and c.startswith("[image removed by vac"):
+            return out  # text already cleared on an earlier run; just drop images
+        if isinstance(c, str) and not _IMG_STUB.match(c) and c:
+            return out  # real tool text (e.g. screenshot tool's caption): keep it
         out["content"] = note
         return out
 
