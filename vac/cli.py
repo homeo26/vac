@@ -114,7 +114,7 @@ def analyze(id_or_path: str = typer.Argument(..., help="Session id or path to .j
     size = path.stat().st_size
     imgs = count_images(path, store.is_image_block)
     biggest = max_line_bytes(path)
-    console.print(f"[bold]{store.tool_name}[/bold] session [cyan]{path.stem}[/cyan]")
+    console.print(f"[bold]{store.tool_name}[/bold] session [cyan]{path.parent.name if path.name == 'messages.jsonl' else path.stem}[/cyan]")
     console.print(f"  path:   {path}")
     console.print(f"  size:   {_human(size)}" + (f"  [yellow]⚠ large session[/yellow]"
                                                  if size > BIG_SESSION_BYTES else ""))
@@ -272,6 +272,8 @@ def archive(
             if s.active and not include_active:
                 skipped_active += 1
                 continue
+            if s.path.name == "messages.jsonl":
+                continue  # v3 dir-per-session layout: archive not supported yet
             selected.append(s)
 
     if not selected:
