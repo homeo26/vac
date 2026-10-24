@@ -69,6 +69,7 @@ pip install -e ".[test]"        # or:  uv tool install .
 | `vac analyze <id>` | — | Break down one session: size, image count, largest entry, active? |
 | `vac clean <id>` | `--keep N` · `--dry-run` · `--force` · `--no-backup` | Strip embedded images (fixes the 2000px / 100-image / payload crashes). Keeps the newest **N** (default 3); cleared file-read images keep a re-readable path |
 | `vac prune <id>` | `--oldest N` · `--mode outputs\|hard` · `--max-field <n>` · `--dry-run` · `--force` · `--no-backup` | Free ~N% of context **tokens** from the oldest turns (`hard` guarantees the target; `outputs` keeps text) |
+| `vac prune <id>` *(Kiro v3)* | `--keep-recent N` · `--cap` · `--dry-run` · `--force` · `--no-backup` | Shorten what the agent already used (tool output, tool/skill definition dumps, inline images) in the part after the last compaction, keeping the newest N% whole; messages and replies are never changed. `--cap` also turns off auto-compaction for that session |
 | `vac doctor` | `--json` | Flag sessions likely wedged: many images, context-bomb entry, or oversized session |
 | `vac name [<id>]` | `--include-generic` · `--llm-cmd "claude -p"` · `--tool` · `--limit N` · `--dry-run` | AI-name untitled sessions from their content (ChatGPT/Claude-style). Uses a local LLM CLI — no API key. Kiro only (writable title store) |
 | `vac archive` | `--older-than <dur>` · `--tool` · `--include-active` · `--dry-run` | Archive (tar.gz) + remove sessions older than a threshold — reversible |
@@ -79,6 +80,7 @@ pip install -e ".[test]"        # or:  uv tool install .
 vac doctor                                  # triage everything
 vac clean <id> --keep 1                     # drop old images (add --dry-run to preview)
 vac prune <id> --oldest 20 --mode hard      # free ~20% of context tokens
+vac prune <v3-id> --cap                     # Kiro v3: trim used tool output, run to 100%
 vac archive --older-than 60d                # reclaim disk (reversible)
 ```
 
@@ -121,6 +123,7 @@ model can pull the image back on demand if it ever needs the pixels again.
 | Tool | Store | Image forms handled |
 |---|---|---|
 | Kiro CLI | `~/.kiro/sessions/cli/*.jsonl` | inline `{"kind":"image",...}` **and** tool-result `{"Image":{"source":{...}}}` (base64 or raw-bytes array) |
+| Kiro CLI v3 | `~/.kiro/sessions/<workspace>/<id>/messages.jsonl` | file-read stubs (`Image: <path>`), and base64 `images` on tool results and pasted prompts |
 | Claude Code | `~/.claude/projects/**/*.jsonl` | `{"type":"image","source":{"type":"base64",...}}` |
 
 Adapters are pluggable — more tools can be added.
