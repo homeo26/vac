@@ -362,3 +362,9 @@ def test_v3_store_resolves_session_dir(tmp_path):
     _v3(d / "messages.jsonl", [{"type": "user", "content": "hi"}])
     assert KiroV3Store(tmp_path / "sessions").resolve(str(d)) == d / "messages.jsonl"
 
+
+def test_titler_default_does_not_persist_sessions():
+    import inspect
+    from vac.core import DEFAULT_TITLER, generate_title
+    assert "--no-session-persistence" in DEFAULT_TITLER.split()
+    assert inspect.signature(generate_title).parameters["llm_cmd"].default == DEFAULT_TITLER

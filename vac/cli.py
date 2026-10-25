@@ -20,7 +20,7 @@ from rich.table import Table
 from .adapters import ALL_STORES, SessionStore
 from .core import (clean_images, count_images, max_line_bytes, prune_oldest,
                    parse_duration, age_days, session_file_group, archive_files,
-                   build_digest, generate_title, prune_v3, is_v3_log)
+                   build_digest, generate_title, prune_v3, is_v3_log, DEFAULT_TITLER)
 
 app = typer.Typer(add_completion=False, help="Vacuum up cruft from AI coding-agent sessions.")
 console = Console()
@@ -381,7 +381,7 @@ def name(
     include_generic: bool = typer.Option(False, "--include-generic", help="Also re-title short/generic names"),
     all_: bool = typer.Option(False, "--all", help="Re-title every matching session, even ones with a good title"),
     newer_than: Optional[str] = typer.Option(None, "--newer-than", help="Only sessions used within this window (e.g. 30d, 2w)"),
-    llm_cmd: str = typer.Option("claude -p", "--llm-cmd", help="Titler command: reads a digest on stdin, prints a title"),
+    llm_cmd: str = typer.Option(DEFAULT_TITLER, "--llm-cmd", help="Titler command: reads a digest on stdin, prints a title"),
     tool: Optional[str] = typer.Option(None, help="Filter by tool: kiro | claude"),
     limit: int = typer.Option(25, help="Max sessions to name in one run"),
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Preview titles without writing"),

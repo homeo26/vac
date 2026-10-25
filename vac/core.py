@@ -736,9 +736,14 @@ def _sanitize_title(raw: str) -> str:
     return t[:70]
 
 
-def generate_title(digest: str, llm_cmd: str = "claude -p", timeout: int = 120) -> str | None:
+# Claude Code headless. --no-session-persistence stops each titling call from
+# saving its own session, which `vac list` would then show as a Claude session.
+DEFAULT_TITLER = "claude -p --no-session-persistence"
+
+
+def generate_title(digest: str, llm_cmd: str = DEFAULT_TITLER, timeout: int = 120) -> str | None:
     """Generate a title by piping a prompt to an LLM CLI (stdin -> stdout).
-    Returns None on failure. Default backend: `claude -p` (Claude Code headless)."""
+    Returns None on failure. Default backend: DEFAULT_TITLER."""
     if not digest.strip():
         return None
     prompt = TITLE_PROMPT.format(digest=digest)
