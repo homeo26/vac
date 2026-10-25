@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .base import SessionInfo, SessionStore
+from .base import SessionInfo, SessionStore, first_record
 
 _IMG_STUB = re.compile(r"^Image: (?P<path>.+?)\nFormat: .*?\nMediaType: image/", re.S)
 
@@ -112,12 +112,22 @@ class KiroV3Store(SessionStore):
         except OSError:
             return False
 
+    def looks_like(self, record: dict) -> bool:
+        # {"id": ..., "timestamp": ..., "payload": {"type": ...}}
+        return isinstance(record.get("payload"), dict)
+
+    def owns_path(self, path: Path) -> bool:
+        # The v3 root also contains the v1 store (sessions/cli), so the folder
+        # alone isn't proof: require the v3 record shape.
+        rec = first_record(path)
+        return rec is not None and self.looks_like(rec)
+
     def resolve(self, id_or_path: str) -> Optional[Path]:
         p = Path(id_or_path).expanduser()
-        if p.name == "messages.jsonl" and p.exists():
-            return p
         if p.is_dir() and (p / "messages.jsonl").exists():
-            return p / "messages.jsonl"
+            p = p / "messages.jsonl"
+        if p.suffix == ".jsonl" and p.exists():
+            return p if self.owns_path(p) else None
         matches = [m for m in self.root.glob(f"*/{id_or_path}/messages.jsonl")
                    if m.parent.parent.name != "cli"]
         return matches[0] if matches else None

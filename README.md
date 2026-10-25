@@ -74,7 +74,7 @@ pip install -e ".[test]"        # or:  uv tool install .
 | `vac name [<id>]` | `--include-generic` · `--llm-cmd "claude -p"` · `--tool` · `--limit N` · `--dry-run` | AI-name untitled sessions from their content (ChatGPT/Claude-style). Uses a local LLM CLI — no API key. Kiro only (writable title store) |
 | `vac archive` | `--older-than <dur>` · `--tool` · `--include-active` · `--dry-run` | Archive (tar.gz) + remove sessions older than a threshold — reversible |
 
-`<id>` = a session id or a path to a `.jsonl`. `<dur>` = `60d` `2w` `12h` `30m`. Commands that write (`clean`, `prune`, `name`, `archive`) **apply by default** — add `--dry-run` (`-n`) to preview. They create a `.bak`, refuse to edit active/locked sessions (`--force` overrides), and JSON-validate before writing. Works on both **Kiro CLI** and **Claude Code**.
+`<id>` = a session id or a path to a `.jsonl` (a copy outside the tool's folder works too: vac picks the tool from the file's first record). `<dur>` = `60d` `2w` `12h` `30m`. Commands that write (`clean`, `prune`, `name`, `archive`) **apply by default** — add `--dry-run` (`-n`) to preview. They create a `.bak`, refuse to edit active/locked sessions (`--force` overrides), and JSON-validate before writing. Works on both **Kiro CLI** and **Claude Code**.
 
 ```bash
 vac doctor                                  # triage everything

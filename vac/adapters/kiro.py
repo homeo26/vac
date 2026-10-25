@@ -65,10 +65,14 @@ class KiroStore(SessionStore):
         except (json.JSONDecodeError, OSError):
             return False
 
+    def looks_like(self, record: dict) -> bool:
+        # {"version": "v1", "kind": "Prompt"|"AssistantMessage"|"ToolResults", "data": {...}}
+        return "kind" in record and "data" in record and "payload" not in record
+
     def resolve(self, id_or_path: str) -> Optional[Path]:
-        p = Path(id_or_path)
+        p = Path(id_or_path).expanduser()
         if p.suffix == ".jsonl" and p.exists():
-            return p
+            return p if self.owns_path(p) else None
         cand = self.root / f"{id_or_path}.jsonl"
         return cand if cand.exists() else None
 

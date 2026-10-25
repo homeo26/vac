@@ -46,10 +46,15 @@ class ClaudeCodeStore(SessionStore):
         except OSError:
             return False
 
+    def looks_like(self, record: dict) -> bool:
+        # {"type": "user"|"assistant"|"summary"|"queue-operation"|..., "sessionId": ..., ...}
+        return ("type" in record and ("sessionId" in record or "uuid" in record or "message" in record)
+                and "payload" not in record and "kind" not in record)
+
     def resolve(self, id_or_path: str) -> Optional[Path]:
-        p = Path(id_or_path)
+        p = Path(id_or_path).expanduser()
         if p.suffix == ".jsonl" and p.exists():
-            return p
+            return p if self.owns_path(p) else None
         # id is a uuid; search all project slugs for {uuid}.jsonl
         matches = list(self.root.glob(f"*/{id_or_path}.jsonl"))
         return matches[0] if matches else None

@@ -323,3 +323,42 @@ def test_v3_prune_is_idempotent(tmp_path):
     prune_v3(p, dry_run=False, backup=False)
     again = prune_v3(p, dry_run=True)
     assert again.freed_tokens == 0
+
+
+# ---------------- path ownership ----------------
+
+def _stores(tmp_path):
+    from vac.adapters import KiroV3Store
+    roots = tmp_path / "roots"
+    return {"kiro": KiroStore(roots / "kiro" / "sessions" / "cli"),
+            "kiro-v3": KiroV3Store(roots / "kiro" / "sessions"),
+            "claude": ClaudeCodeStore(roots / "claude" / "projects")}
+
+
+@pytest.mark.parametrize("shape,owner", [
+    ({"type": "user", "sessionId": "s1", "uuid": "u1", "message": {"role": "user", "content": "hi"}}, "claude"),
+    ({"version": "v1", "kind": "Prompt", "data": {"content": [{"kind": "text", "data": "hi"}]}}, "kiro"),
+    ({"id": "0", "timestamp": "2026-10-01T00:00:00Z", "payload": {"type": "user", "content": "hi"}}, "kiro-v3"),
+])
+def test_only_matching_store_claims_file_outside_roots(tmp_path, shape, owner):
+    f = write_jsonl(tmp_path / "copy.jsonl", [shape])
+    claimed = [name for name, s in _stores(tmp_path).items() if s.resolve(str(f))]
+    assert claimed == [owner]
+
+
+def test_v3_store_skips_v1_file_under_its_root(tmp_path):
+    from vac.adapters import KiroV3Store
+    root = tmp_path / "sessions"
+    (root / "cli").mkdir(parents=True)
+    f = write_jsonl(root / "cli" / "abc.jsonl", [{"version": "v1", "kind": "Prompt", "data": {}}])
+    assert KiroV3Store(root).resolve(str(f)) is None
+    assert KiroStore(root / "cli").resolve(str(f)) == f
+
+
+def test_v3_store_resolves_session_dir(tmp_path):
+    from vac.adapters import KiroV3Store
+    d = tmp_path / "sessions" / "0123456789abcdef" / "sess_x"
+    d.mkdir(parents=True)
+    _v3(d / "messages.jsonl", [{"type": "user", "content": "hi"}])
+    assert KiroV3Store(tmp_path / "sessions").resolve(str(d)) == d / "messages.jsonl"
+
